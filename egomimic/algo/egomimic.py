@@ -4,49 +4,41 @@ Implementation of EgoMimic.
 
 from collections import OrderedDict
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as transforms
 
 import robomimic.utils.tensor_utils as TensorUtils
-from egomimic.algo import register_algo_factory_func, PolicyAlgo
-from robomimic.algo.bc import BC_VAE
 
 from egomimic.utils.egomimicUtils import nds
 import matplotlib.pyplot as plt
 import robomimic.utils.obs_utils as ObsUtils
 
-from egomimic.configs import config_factory
 
 from egomimic.models.act_nets import Transformer, StyleEncoder
 
-from robomimic.models.transformers import PositionalEncoding
 
 import robomimic.models.base_nets as BaseNets
-import egomimic.models.policy_nets as PolicyNets
 import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.obs_utils as ObsUtils
 
-import json
 
 from egomimic.algo.act import ACT, ACTModel
 
 
-@register_algo_factory_func("egomimic")
-def algo_config_to_class(algo_config):
-    """
-    Maps algo config to the BC algo class to instantiate, along with additional algo kwargs.
+# @register_algo_factory_func("egomimic")
+# def algo_config_to_class(algo_config):
+#     """
+#     Maps algo config to the BC algo class to instantiate, along with additional algo kwargs.
 
-    Args:
-        algo_config (Config instance): algo config
+#     Args:
+#         algo_config (Config instance): algo config
 
-    Returns:
-        algo_class: subclass of Algo
-        algo_kwargs (dict): dictionary of additional kwargs to pass to algorithm
-    """
-    algo_class, algo_kwargs = EgoMimic, {}
-    return algo_class, algo_kwargs
+#     Returns:
+#         algo_class: subclass of Algo
+#         algo_kwargs (dict): dictionary of additional kwargs to pass to algorithm
+#     """
+#     algo_class, algo_kwargs = EgoMimic, {}
+#     return algo_class, algo_kwargs
 
 
 class EgoMimicModel(ACTModel):
@@ -259,7 +251,7 @@ class EgoMimic(ACT):
         modality = self._modality_check(batch)
         cam_keys = (
             self.camera_keys if modality == "robot" else self.camera_keys[:1]
-        )  # TODO Simar rm hardcoding
+        )  # TODO (Simar) rm hardcoding
         proprio_keys = (
             self.proprio_keys_hand if modality == "hand" else self.proprio_keys
         )
@@ -310,7 +302,7 @@ class EgoMimic(ACT):
 
         cam_keys = (
             self.camera_keys if modality == "robot" else self.camera_keys[:1]
-        )  # TODO Simar rm hardcoding
+        )  # TODO (Simar) rm hardcoding
         proprio_keys = (
             self.proprio_keys_hand if modality == "hand" else self.proprio_keys
         )

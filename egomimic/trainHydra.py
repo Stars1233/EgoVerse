@@ -113,7 +113,6 @@ def main(cfg: DictConfig) -> Optional[float]:
     extras(cfg)
 
     print(OmegaConf.to_yaml(cfg))
-    breakpoint()
 
     # train the model
     metric_dict, _ = train(cfg)

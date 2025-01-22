@@ -3,20 +3,12 @@ from collections import OrderedDict
 
 import numpy as np
 import psutil
-import robomimic.utils.obs_utils as ObsUtils
 import robomimic.utils.tensor_utils as TensorUtils
 import torch
 from lightning import LightningModule
-import robomimic.utils.obs_utils as ObsUtils
-from robomimic.algo.algo import PolicyAlgo
-import egomimic.utils.val_utils as ValUtils
 from egomimic.utils.egomimicUtils import nds
-from egomimic.pl_utils.pl_data_utils import DualDataModuleWrapper, json_to_config
-from egomimic.algo import algo_factory
-import robomimic.utils.file_utils as FileUtils
-from egomimic.configs import config_factory
-import json
-from typing import Any, Dict, Tuple
+from egomimic.pl_utils.pl_data_utils import DualDataModuleWrapper 
+from typing import Any, Dict
 import torchvision.io as tvio
 from lightning.pytorch.utilities import rank_zero_only
 
@@ -59,8 +51,6 @@ class ModelWrapper(LightningModule):
         return os.path.join(self.root_dir(), "videos")
 
     def training_step(self, batch, batch_idx):
-        print("INSIDE ON TRAIN STEP")
-
         if self.datamodule is None:
             raise ValueError("Cannot train if datamodule is none, make sure to pass hydra.utils.instantiate(cfg.model, data_module=datamodule)")
         DUAL_DL = isinstance(batch, list)
@@ -92,7 +82,7 @@ class ModelWrapper(LightningModule):
             batch = self.model.process_batch_for_training(batch)
             # batch = self.model.postprocess_batch_for_training(batch, norm_dict, normalize_actions=self.train_cfg.normalize_actions)
             predictions = self.model.forward_training(batch)
-            losses = self.model._compute_losses(predictions, batch)
+            losses = self.model.compute_losses(predictions, batch)
             loss_dicts.append(losses)
 
         # Average over both the hand and robot batch if applicable
@@ -118,7 +108,6 @@ class ModelWrapper(LightningModule):
 
     @rank_zero_only
     def on_validation_start(self):
-        print("INSIDE ON VALIDATION START")
         # make the video directory for this epoch
         os.makedirs(os.path.join(self.video_dir(), f"epoch_{self.trainer.current_epoch}"), exist_ok=True)
 
@@ -127,8 +116,6 @@ class ModelWrapper(LightningModule):
         """
         Run a validation step on the batch, and save that batch of images into the val_image_buffer.  Once the buffer hits 1000 images, save that as a 30fps video using torchvision.io.write_video.  
         """
-        print("INSIDE VAL STEP")
-
         batch = self.model.process_batch_for_training(batch)
         metrics, images = self.model.forward_eval_logging(batch)
         
@@ -140,8 +127,6 @@ class ModelWrapper(LightningModule):
             self.val_image_buffer.clear()
         
             self.val_counter += 1
-        
-        print("Validation Step: ", metrics)
         
         self.log_dict(metrics)
     
@@ -179,19 +164,6 @@ class ModelWrapper(LightningModule):
                 # },
             }
         return {"optimizer": optimizer}
-
-    def custom_eval(self, video_dir):
-        self.eval()
-        self.zero_grad()
-        with torch.no_grad():
-            valid_step_log = ValUtils.evaluate_high_level_policy(
-                self.model,
-                self.datamodule.val_dataloader_1(),
-                video_dir,
-                ac_key=self.model.ac_key,
-            )  # save vid only once every video_freq epochs
-
-        return valid_step_log
 
     def on_train_epoch_start(self):
         # flatten and take the mean of the metrics

@@ -2,7 +2,6 @@ from torch.utils.data import DataLoader, random_split
 from lightning import LightningDataModule
 from egomimic.utils.egomimicUtils import nds
 import json
-from egomimic.configs import config_factory
 import os
 from rldb.utils import RLDBDataset
 from termcolor import cprint
@@ -162,38 +161,3 @@ def get_data_module(trainset, validset, train_sampler, valid_sampler, config):
             pin_memory=True,
         ),
     )
-
-
-def json_to_config(json_dict, is_file=False):
-    """
-    Converts a json dictionary to a Config object
-    json_dict (dict): json dump string or filename to load
-    is_file (bool): whether json_dict is a filename or a json dump string
-    """
-    if is_file:
-        ext_cfg = json.load(open(os.path.join(json_dict, "config.json"), "r"))
-    else:
-        assert isinstance(json_dict, str)
-        ext_cfg = json.loads(json_dict)
-
-    config = config_factory(ext_cfg["algo_name"])
-    with config.values_unlocked():
-        config.update(ext_cfg)
-
-    return config
-
-
-def robomimic_dict_to_config(ext_cfg):
-    """
-    ext_cfg: a dictionary version of the config you want
-    """
-    # ext_cfg = json.load(open(os.path.join(resume_dir, "config.json"), "r"))
-    config = config_factory(ext_cfg["algo_name"])
-    # update config with external json - this will throw errors if
-    # the external config has keys not present in the base algo config
-    with config.values_unlocked():
-        config.update(ext_cfg)
-
-    config.lock()
-
-    return config
