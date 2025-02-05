@@ -21,8 +21,6 @@ class RLDBModule(LightningDataModule):
     def val_dataloader(self):
         return DataLoader(self.val_dataset, shuffle=False, **self.valid_dataloader_kwargs)
 
-# TODO: Use pytorch lightning combined loader
-# TODO: when completed, check isinstance(dict)
 class MultiDataModuleWrapper(LightningDataModule):
     """
     New functionality for dictionary based multi embodiment loading using CombinedLoader.

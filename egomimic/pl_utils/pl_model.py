@@ -6,7 +6,7 @@ import psutil
 import robomimic.utils.tensor_utils as TensorUtils
 import torch
 from lightning import LightningModule
-from egomimic.utils.egomimicUtils import nds
+from egomimic.utils.egomimicUtils import nds, get_embodiment
 from egomimic.pl_utils.pl_data_utils import DualDataModuleWrapper, RLDBModule
 from typing import Any, Dict
 import torchvision.io as tvio
@@ -36,7 +36,7 @@ class ModelWrapper(LightningModule):
         self.step_log_all_train = []
         self.step_log_all_valid = []
 
-        self.val_image_buffer, self.val_counter = [], 0
+        self.val_image_buffer, self.val_counter = {}, {}
         # TODO __init__ should take the config, and init the model here.  Then save_hyperparameters will just save the config rather than the model
     
     def root_dir(self):
@@ -73,35 +73,37 @@ class ModelWrapper(LightningModule):
         # make the video directory for this epoch
         os.makedirs(os.path.join(self.video_dir(), f"epoch_{self.trainer.current_epoch}"), exist_ok=True)
 
-    #TODO: dict of buffer for each data loader 
     @rank_zero_only
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         """
         Run a validation step on the batch, and save that batch of images into the val_image_buffer.  Once the buffer hits 1000 images, save that as a 30fps video using torchvision.io.write_video.  
         """
         batch = self.model.process_batch_for_training(batch)
-        metrics, images = self.model.forward_eval_logging(batch)
+        metrics, images_dict = self.model.forward_eval_logging(batch)
+
+        ## images is now a dict
         
-        self.val_image_buffer.extend(torch.from_numpy(images))
-        if len(self.val_image_buffer) >= 1000:
-            frames = torch.stack(self.val_image_buffer)
-            path = os.path.join(self.video_dir(), f"epoch_{self.trainer.current_epoch}/validation_video_{self.val_counter}.mp4")
-            tvio.write_video(path, frames, fps=30)
-            self.val_image_buffer.clear()
-        
-            self.val_counter += 1
+        for key, images in images_dict
+            self.val_image_buffer[key].extend(torch.from_numpy(images))
+            if len(self.val_image_buffer[key]) >= 1000:
+                frames = torch.stack(self.val_image_buffer[key])
+                path = os.path.join(self.video_dir(), str(get_embodiment(key)), f"epoch_{self.trainer.current_epoch}/validation_video_{self.val_counter}.mp4")
+                tvio.write_video(path, frames, fps=30)
+                self.val_image_buffer[key].clear()
+                self.val_counter[key] += 1
         
         self.log_dict(metrics)
     
     @rank_zero_only
     def on_validation_end(self):
-        if len(self.val_image_buffer) != 0:
-            frames = torch.stack(self.val_image_buffer)
-            path = os.path.join(self.video_dir(), f"epoch_{self.trainer.current_epoch}/validation_video_{self.val_counter}.mp4")
-            tvio.write_video(path, frames, fps=30)
-        
-        self.val_counter = 0
-        self.val_image_buffer = []
+        for key, buffer in self.val_image_buffer.items()
+            if len(buffer) != 0:
+                frames = torch.stack(buffer)
+                path = os.path.join(self.video_dir(), str(get_embodiment(key)), f"epoch_{self.trainer.current_epoch}/validation_video_{self.val_counter}.mp4")
+                tvio.write_video(path, frames, fps=30)
+            
+            self.val_counter[key] = 0
+            self.val_image_buffer[key] = []
         
 
     def configure_optimizers(self) -> Dict[str, Any]:
