@@ -50,24 +50,23 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         train_datasets[dataset_name] = hydra.utils.instantiate(
             cfg.data.train_datasets[dataset_name], data_schematic=data_schematic_dict[dataset_name]
         )
-    breakpoint()
+
     valid_datasets = {}
     for dataset_name in cfg.data.valid_datasets:
         valid_datasets[dataset_name] = hydra.utils.instantiate(
             cfg.data.valid_datasets[dataset_name], data_schematic=data_schematic_dict[dataset_name]
         )
 
-    breakpoint()
     #NOTE: Since we instantiate individual Dataset objects with the DataSchematic, we have to hold the instances in a seperate dict and not the cfg object due to OmegaConf needing strict typing
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
-    assert cfg.data.__target__ == "MultiDataModuleWrapper", "cfg.data.__target__ must be 'MultiDataModuleWrapper'"
+    assert "MultiDataModuleWrapper" in cfg.data._target_ , "cfg.data._target_ must be 'MultiDataModuleWrapper'"
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data, train_datasets=train_datasets, valid_datasets=valid_datasets)
 
     # TODO: deprecate shape inference in favor of LeRobotDatasetMetadata
     # NOTE: Since data_schematic is a dict we have per dataset data_schematics that need to infer shapes and norms
     for dataset_name, data_schematic in data_schematic_dict.items():
         log.info(f"Inferring shapes for dataset <{dataset_name}>")
-        data_schematic.infer_shapes_from_batch(datamodule.train_datasets[dataset_name])
+        data_schematic.infer_shapes_from_batch(datamodule.train_datasets[dataset_name][0])
         data_schematic.infer_norm_from_dataset(datamodule.train_datasets[dataset_name])
     
     #TODO: Handle dictionary style data_schematic on algorithm side. For ACT theoretically this should just be accessing the first key
