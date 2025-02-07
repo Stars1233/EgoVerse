@@ -373,7 +373,7 @@ class ACT(Algo):
             metrics[f"Valid/{ac_key}_paired_mse_avg"] = mse(preds[ac_key].cpu(), batch[ac_key].cpu())
             metrics[f"Valid/{ac_key}_final_mse_avg"] = mse(preds[ac_key][:, -1].cpu(), batch[ac_key][:, -1].cpu())
         
-        ims = self.visualize_preds(preds, batch)
+        ims = {self.embodiment_id : self.visualize_preds(preds, batch)}
 
         return metrics, ims
 
@@ -394,12 +394,12 @@ class ACT(Algo):
         for b in range(ims.shape[0]):
             if preds.shape[-1] == 7 or preds.shape[-1] == 14:
                 ac_type = "joints"
-            elif preds.shape[-1] == 6 or preds.shape[-1] == 12:
+            elif preds.shape[-1] == 3 or preds.shape[-1] == 6:
                 ac_type = "xyz"
             else:
                 raise ValueError(f"Unknown action type with shape {preds.shape}")
 
-            arm = "right" if preds.shape[-1] == 7 or preds.shape[-1] == 6 else "both"
+            arm = "right" if preds.shape[-1] == 7 or preds.shape[-1] == 3 else "both"
             ims[b] = draw_actions(ims[b], ac_type, "Purples", preds[b].cpu().numpy(), self.camera_transforms.extrinsics, self.camera_transforms.intrinsics, arm=arm)
 
             ims[b] = draw_actions(ims[b], ac_type, "Greens", gt[b].cpu().numpy(), self.camera_transforms.extrinsics, self.camera_transforms.intrinsics, arm=arm)
@@ -463,20 +463,6 @@ class ACT(Algo):
         mean_kld = klds.mean(1).mean(0, True)
 
         return total_kld, dimension_wise_kld, mean_kld
-
-    def _modality_check(self, batch):
-        """
-        Helper function to check if the batch is robot or hand data.
-        """
-        if (batch["type"] == 0).all():
-            modality = "robot"
-        elif (batch["type"] == 1).all():
-            modality = "hand"
-        else:
-            raise ValueError(
-                "Got mixed modalities, current implementation expects either robot or hand data only."
-            )
-        return modality
 
     def _robomimic_to_act_data(self, batch, cam_keys, proprio_keys):
         qpos = [batch[k] for k in proprio_keys]

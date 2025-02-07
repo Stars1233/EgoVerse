@@ -1,7 +1,7 @@
 _target_: egomimic.pl_utils.pl_model.ModelWrapper
 robomimic_model:
   _target_: egomimic.algo.hpt.HPT
-  data_schematic: ${data.dataset.data_schematic}
+  data_schematic: _${data.dataset.data_schematic}
   camera_transforms:
     _target_: egomimic.utils.egomimicUtils.CameraTransforms
     intrinsics_key: "base"
@@ -20,17 +20,17 @@ robomimic_model:
     weight_init_style: "pytorch"
   
   multitask: false
-  pretrained: falses
+  pretrained: false
   pretrained_checkpoint: "" # TODO
 
-  domains: ["hand", "robot"]
+  domains: ["eve_bimanual", "aria_bimanual"]
   shared_obs_keys: ["front_img_1"]
 
   shared_stem_specs:
     front_img_1:
-      stem_class: egomimic.models.hpt_nets.MLPPolicyStem
+      _target_: egomimic.models.hpt_nets.MLPPolicyStem
       input_dim: 512
-      output_dim: ${robomimic_model.trunk.embed_dim}
+      output_dim: 512
       widths: [512]
       specs:
         random_horizon_masking: false
@@ -39,14 +39,14 @@ robomimic_model:
           crossattn_heads: 8
           crossattn_dim_head: 64
           crossattn_modality_dropout: 0.1
-          modality_embed_dim: ${robomimic_model.trunk.embed_dim}
+          modality_embed_dim: 512
   
   stem_specs:
-    hand:
+    aria_bimanual:
       state:
-        stem_class: egomimic.models.hpt_nets.MLPPolicyStem
+        _target_: egomimic.models.hpt_nets.MLPPolicyStem
         input_dim: 6
-        output_dim: ${robomimic_model.trunk.embed_dim}
+        output_dim: 512
         widths: [512]
         specs:
           random_horizon_masking: false
@@ -55,13 +55,13 @@ robomimic_model:
             crossattn_heads: 8
             crossattn_dim_head: 64
             crossattn_modality_dropout: 0.1
-            modality_embed_dim: ${robomimic_model.trunk.embed_dim}
+            modality_embed_dim: 512
     
-    robot:
+    eve_bimanual:
       state:
-        stem_class: egomimic.models.hpt_nets.MLPPolicyStem
+        _target_: egomimic.models.hpt_nets.MLPPolicyStem
         input_dim: 14
-        output_dim: ${robomimic_model.trunk.embed_dim}
+        output_dim: 512
         widths: [512]
         specs:
           random_horizon_masking: false
@@ -70,12 +70,12 @@ robomimic_model:
             crossattn_heads: 8
             crossattn_dim_head: 64
             crossattn_modality_dropout: 0.1
-            modality_embed_dim: ${robomimic_model.trunk.embed_dim}
+            modality_embed_dim: 512
 
       right_wrist_img:
-        stem_class: egomimic.models.hpt_nets.MLPPolicyStem
+        _target_: egomimic.models.hpt_nets.MLPPolicyStem
         input_dim: 512
-        output_dim: ${robomimic_model.trunk.embed_dim}
+        output_dim: 512
         widths: [512]
         specs:
           random_horizon_masking: false
@@ -84,35 +84,31 @@ robomimic_model:
             crossattn_heads: 8
             crossattn_dim_head: 64
             crossattn_modality_dropout: 0.1
-            modality_embed_dim: ${robomimic_model.trunk.embed_dim}
+            modality_embed_dim: 512
 
   head_specs:
-    hand:
-      stem_class: egomimic.models.hpt_nets.MLPPolicyHead
-      input_dim: ${robomimic_model.trunk.embed_dim}
-      output_dim: ${stem_specs.hand.state.input_dim}
-      widths: [256, ${robomimic_model.trunk.embed_dim}]
+    aria_bimanual:
+      _target_: egomimic.models.hpt_nets.MLPPolicyHead
+      input_dim: 512
+      output_dim: 6
+      widths: [256, 512]
       tanh_end: false
       dropout: true
-    robot:
-      stem_class: egomimic.models.hpt_nets.MLPPolicyHead
-      input_dim: ${robomimic_model.trunk.embed_dim}
-      output_dim: ${stem_specs.robot.state.input_dim}
-      widths: [256, ${robomimic_model.trunk.embed_dim}]
+    eve_bimanual:
+      _target_: egomimic.models.hpt_nets.MLPPolicyHead
+      input_dim: 512
+      output_dim: 14
+      widths: [256, 512]
       tanh_end: false
       dropout: true
 
   encoder_specs:
     front_img_1:
-      modality: image
-      class: ResNet
-      kwargs:
-        num_of_copy: 1
+      _target_: egomimic.models.hpt_nets.ResNet
+      num_of_copy: 1
     right_wrist_img:
-      modality: image
-      class: ResNet
-      kwargs:
-        num_of_copy: 1
+      _target_: egomimic.models.hpt_nets.ResNet
+      num_of_copy: 1
 
   train_image_augs:
     _target_: torchvision.transforms.Compose

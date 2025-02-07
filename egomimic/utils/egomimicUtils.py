@@ -11,6 +11,10 @@ import torchvision.transforms.v2.functional as TVTF
 import scipy
 from numbers import Number
 from enum import Enum
+import torch.nn as nn
+import einops
+
+STD_SCALE = 0.02
 
 ARIA_INTRINSICS = np.array(
     [
@@ -56,6 +60,35 @@ class CameraTransforms:
         self.intrinsics[:-1] = self.intrinsics[:-1] / 2
         self.extrinsics = EXTRINSICS[extrinsics_key]
 
+## HPT Utils
+def get_sinusoid_encoding_table(position_start, position_end, d_hid):
+    """Sinusoid position encoding table"""
+
+    # TODO: make it with torch instead of numpy
+    def get_position_angle_vec(position):
+        return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
+
+    sinusoid_table = np.array([get_position_angle_vec(pos_i) for pos_i in range(position_start, position_end)])
+    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
+    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+
+    return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+
+class EinOpsRearrange(nn.Module):
+    def __init__(self, rearrange_expr: str, **kwargs) -> None:
+        super().__init__()
+        self.rearrange_expr = rearrange_expr
+        self.kwargs = kwargs
+
+    def forward(self, x):
+        assert isinstance(x, torch.Tensor)
+        return einops.rearrange(x, self.rearrange_expr, **self.kwargs)
+
+def download_from_huggingface(huggingface_repo_id: str):
+    import huggingface_hub
+
+    folder = huggingface_hub.snapshot_download(huggingface_repo_id)
+    return folder
 
 def draw_actions(im, type, color, actions, extrinsics, intrinsics, arm="both"):
     """

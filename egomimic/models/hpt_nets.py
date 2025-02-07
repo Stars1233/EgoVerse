@@ -370,6 +370,7 @@ class PolicyStem(nn.Module):
 
     def __init__(self, **kwargs):
         super().__init__()
+        self.specs = kwargs.get("specs")
 
     def init_cross_attn(self, stem_spec):
         """ initialize cross attention module and the learnable tokens """
@@ -441,7 +442,7 @@ class STPolicyStem(nn.Module):
     # https://github.com/DAMO-NLP-SG/VideoLLaMA2/blob/main/videollama2/model/projector.py
     """
     def __init__(self, dimension=2, **kwargs):
-        super().__init__()
+        super().__init__(**kwargs)
 
 
     def init(self, stem_spec, modality):
@@ -517,7 +518,7 @@ class MLPPolicyStem(PolicyStem):
         **kwargs,
     ) -> None:
         """vanilla MLP class"""
-        super().__init__()
+        super().__init__(**kwargs)
         modules = [nn.Linear(input_dim, widths[0]), nn.SiLU()]
 
         for i in range(len(widths) - 1):
@@ -567,7 +568,7 @@ class ResNet(PolicyStem):
         **kwargs,
     ) -> None:
         """ResNet Encoder for Images"""  
-        super().__init__()
+        super().__init__(**kwargs)
         pretrained_model = getattr(torchvision.models, resnet_model)(weights=weights)
 
         # by default we use a separate image encoder for each view in downstream evaluation
@@ -637,7 +638,7 @@ class T5Encoder(PolicyStem):
         Args:
             per_token (bool): If True, return per-token embeddings. If False, return mean-pooled embeddings
         """
-        super().__init__()
+        super().__init__(**kwargs)
         self.per_token = per_token
         self.encoder = T5Model.from_pretrained("t5-base").encoder
     

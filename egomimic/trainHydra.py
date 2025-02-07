@@ -22,6 +22,9 @@ from rldb.utils import DataSchematic
 
 import os
 
+# DEBUG
+# os.environ["HYDRA_FULL_ERROR"] = '1'
+
 @task_wrapper
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Trains the model. Can additionally evaluate on a testset, using best weights obtained during

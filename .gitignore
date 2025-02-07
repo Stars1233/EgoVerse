@@ -25,3 +25,5 @@ egomimic/scripts/aloha_process/datasetFig
 egomimic/outputs
 outputs/
 logs/
+emimic/
+emimic.egg-info/

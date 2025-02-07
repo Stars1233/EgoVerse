@@ -3,42 +3,31 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as transforms
-
-import robomimic.utils.tensor_utils as TensorUtils
-from egomimic.algo import register_algo_factory_func, PolicyAlgo
-from robomimic.algo.bc import BC
-
-from egomimic.utils.egomimicUtils import nds, DynamicWrapper
-import matplotlib.pyplot as plt
-import robomimic.utils.obs_utils as ObsUtils
-
-from egomimic.configs import config_factory
-
-from robomimic.models.base_nets import Vit
-import egomimic.models.policy_nets as PolicyNets
-import robomimic.utils.tensor_utils as TensorUtils
-import robomimic.utils.torch_utils as TorchUtils
-import robomimic.utils.obs_utils as ObsUtils
-
-from robomimic.models.transformers import PositionalEncoding
-
-from egomimic.models.hpt_nets import *
-
-from egomimic.utils.hpt_utils import *
-
-import json
-
 import hydra
-from omegaconf import OmegaConf
-
 from functools import partial
 from typing import List, Optional
 import numpy as np
 import einops
-from collections import defaultdict
+from torchmetrics import MeanSquaredError
 
-#TODO: write comments
+
+from egomimic.models.hpt_nets import *
+from egomimic.algo.algo import Algo
+from egomimic.utils.egomimicUtils import draw_actions
+
+from rldb.utils import get_embodiment_id, get_embodiment
+
+from egomimic.utils.egomimicUtils import nds
+from egomimic.utils.egomimicUtils import get_sinusoid_encoding_table, EinOpsRearrange, download_from_huggingface, STD_SCALE
+import matplotlib.pyplot as plt
+import robomimic.utils.obs_utils as ObsUtils
+
+import numpy as np
+
+from overrides import override
+
+from egomimic.algo.algo import Algo
+
 class HPTModel(nn.Module):
     """
     Heterogenous Pretrained Transformer (HPT) implementation based on the HPT paper, with additional modifications.
@@ -110,7 +99,6 @@ class HPTModel(nn.Module):
         self.stems = {}
         self.heads = {}
         # self.normalizer = {}
-        self.encoders = {}
         self.domains = []
         self.use_modality_embedding = use_domain_embedding
         self.observation_horizon = observation_horizon
@@ -136,10 +124,9 @@ class HPTModel(nn.Module):
         modality : str
             The name of the modality.
         encoder_spec : dict or object
-            The specification or configuration for the encoder. This is used with hydra.utils.instantiate.
+            The specification or configuration for the encoder.
         """
-        encoder = hydra.utils.instantiate(encoder_spec)
-        self.encoders[modality] = encoder
+        self.encoders[modality] = encoder_spec
 
     def init_domain_stem(self, domain_name, stem_spec):
         """
@@ -152,17 +139,18 @@ class HPTModel(nn.Module):
         stem_spec : dict-like
             A specification containing configurations for each modality's stem.
         """
+        
         self.stem_spec[domain_name] = stem_spec
-        self.modalities[domain_name] = stem_spec.keys()
+        self.modalities[domain_name] = list(stem_spec.keys())
 
         for modality in self.modalities[domain_name]:
             stem_name = f"{domain_name}_{modality}"
-            self.stems[stem_name] = hydra.utils.instantiate(getattr(stem_spec, modality))
+            self.stems[stem_name] = stem_spec[modality]
             if hasattr(self.stems[stem_name], 'init_cross_attn'):
-                self.stems[stem_name].init_cross_attn(stem_spec[modality].specs.cross_attn_specs)
+                self.stems[stem_name].init_cross_attn(stem_spec[modality].specs.cross_attn)
 
             self.modalities_tokens[modality] = nn.Parameter(
-                torch.randn(1, 1, stem_spec[modality].specs.cross_attn_specs.modality_embed_dim) * STD_SCALE
+                torch.randn(1, 1, stem_spec[modality].specs.cross_attn.modality_embed_dim) * STD_SCALE
             )
 
     def init_domain_head(self, domain_name, head_spec):
@@ -178,7 +166,7 @@ class HPTModel(nn.Module):
         """
         self.head_spec[domain_name] = head_spec
         self.domains.append(domain_name)
-        self.heads[domain_name] = hydra.utils.instantiate(head_spec)
+        self.heads[domain_name] = head_spec
 
     def finalize_modules(self):
         """
@@ -375,7 +363,7 @@ class HPTModel(nn.Module):
             data_horizon = data_shape[1]
             horizon = data_horizon
 
-            if getattr(self, "train_mode", False) and self.stem_spec[domain][modality].cross_attn_specs.random_horizon_masking and data_horizon > 1:
+            if getattr(self, "train_mode", False) and self.stem_spec[domain][modality].specs.random_horizon_masking and data_horizon > 1:
                 horizon = np.random.randint(1, data_horizon + 1)
                 data[modality] = data[modality][:, data_horizon - horizon:]
 
@@ -458,8 +446,7 @@ class HPTModel(nn.Module):
         """
         data = self.preprocess_states(domain, data)
         stem_tokens, token_dict = self.stem_process(domain, data)
-        if self.early_fusion:
-            stem_tokens = self.early_fusion_process(domain, token_dict)
+
         trunk_tokens = self.preprocess_tokens(domain, stem_tokens)
 
         if not self.no_trunk:
@@ -482,7 +469,7 @@ class HPTModel(nn.Module):
             The computed loss value.
         """
         self.train_mode = True
-        domain, data = batch["domain"][0], batch["data"]
+        domain, data = batch["domain"], batch["data"]
 
         features = self.forward_features(domain, data)
 
@@ -612,9 +599,14 @@ class HPT(Algo):
         data_schematic,
         camera_transforms,
         # ---------------------------
+        # Image augmentations
+        # ---------------------------
+        train_image_augs,
+        eval_image_augs,
+        # ---------------------------
         # Trunk params
         # ---------------------------
-        trunk: dict,
+        trunk: dict = None,
         # ---------------------------
         # Other model params
         # ---------------------------
@@ -624,18 +616,13 @@ class HPT(Algo):
         shared_obs_keys: list = None,
         encoder_specs: dict = None,
         domains: list = None,
-        auxiliary_domains: list = None,
-        auxiliary_key: str = None,
+        auxiliary_domains: list = [],
+        auxiliary_key: str = "",
         # ---------------------------
         # Pretrained
         # ---------------------------
         pretrained: bool = False,
         pretrained_checkpoint: str = "",
-        # ---------------------------
-        # Image augmentations
-        # ---------------------------
-        train_image_augs,
-        eval_image_augs,
         # ---------------------------
         # Catch-all kwargs
         # ---------------------------
@@ -645,6 +632,8 @@ class HPT(Algo):
         self.data_schematic = data_schematic
 
         self.camera_transforms = camera_transforms
+        self.train_image_augs = train_image_augs
+        self.eval_image_augs = eval_image_augs
         self.stem_specs = stem_specs
         self.head_specs = head_specs
         self.encoders = encoder_specs
@@ -657,20 +646,20 @@ class HPT(Algo):
         
         self.domains = domains.copy()
         self.auxiliary_domains = auxiliary_domains.copy()
-        self.auxiliary_key = self.auxiliary_key
+        self.auxiliary_key = auxiliary_key
 
         model = HPTModel(**trunk)
         model.auxiliary_key = self.auxiliary_key
 
-        self.camera_keys = data_schematic.keys_of_type("camera_keys")
-        self.proprio_keys = data_schematic.keys_of_type("proprio_keys")
-        self.lang_keys = data_schematic.keys_of_type("lang_keys")
+        # self.camera_keys = data_schematic.keys_of_type("camera_keys")
+        # self.proprio_keys = data_schematic.keys_of_type("proprio_keys")
+        # self.lang_keys = data_schematic.keys_of_type("lang_keys")
 
-        self.proprio_keys = [key for key in self.proprio_keys if key not in self.lang_keys]
-        self.obs_keys = self.proprio_keys + self.camera_keys + self.lang_keys
+        # self.proprio_keys = [key for key in self.proprio_keys if key not in self.lang_keys]
+        # self.obs_keys = self.proprio_keys + self.camera_keys + self.lang_keys
 
-        self.multitask = kwargs.get(multitask, False)
-        self.device = kwargs.get(device, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        self.multitask = kwargs.get("multitask", False)
+        self.device = kwargs.get("device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
         if self.pretrained:
             model.load_pretrained(self.pretrained_checkpoint)
@@ -691,31 +680,286 @@ class HPT(Algo):
         
         model.finalize_modules()
 
-        self.ac_key_robot = data_schematic.keys_of_type("action_keys_robot")
-        self.ac_key_hand = data_schematic.keys_of_type("action_keys_hand")
+        # self.robot_id = get_embodiment_id(self.domains[0])
+        # self.hand_id = get_embodiment_id(self.domains[1])
 
+        self.ac_keys = {}
+        self.camera_keys = {}
+        self.proprio_keys = {}
+        self.lang_keys = {}
+
+        for embodiment in self.domains:
+            embodiment_id = get_embodiment_id(embodiment)
+            self.camera_keys[embodiment_id] = []
+            self.proprio_keys[embodiment_id] = []
+            self.lang_keys[embodiment_id] = []
+            for key in data_schematic.keys_of_type("action_keys"):
+                if data_schematic.is_key_with_embodiment(key, embodiment_id):
+                    self.ac_keys[embodiment_id] = key
+            for key in data_schematic.keys_of_type("camera_keys"):
+                if data_schematic.is_key_with_embodiment(key, embodiment_id):
+                    self.camera_keys[embodiment_id].append(key)
+            for key in data_schematic.keys_of_type("proprio_keys"):
+                if data_schematic.is_key_with_embodiment(key, embodiment_id):
+                    self.proprio_keys[embodiment_id].append(key)
+            for key in data_schematic.keys_of_type("lang_keys"):
+                if data_schematic.is_key_with_embodiment(key, embodiment_id):
+                    self.lang_keys[embodiment_id].append(key)
+            
         self.nets["policy"] = model
         self.nets = self.nets.float().to(self.device)
 
     @override
     def process_batch_for_training(self, batch):
-        batch = self.data_schematic.normalize_data(batch, self.embodiment_id)
+        """
+        Processes input batch from a data loader to filter out
+        relevant information and prepare the batch for training.
+        Args:
+            batch (dict): dictionary with torch.Tensors sampled
+                from a data loader
+        Returns:
+            batch (dict): processed dict of batchs of form
+                front_img_1 torch.Size([32, 3, 480, 640])
+                right_wrist_img: torch.Size([32, 3, 480, 640])
+                joint_positions: torch.Size([32, 1, 7])
+                actions_joints_act: torch.Size([32, 100, 7])
+                demo_number: torch.Size([32])
+                _index: torch.Size([32])
+                pad_mask: torch.Size([32, 100, 1])
+                embodiment: torch.Size([])
+        """
+        processed_batch = {}
+        
+        for embodiment_id, _batch in batch.items():
+            processed_batch[embodiment_id] = {}
+            for key, value in _batch.items():
+                key_name = self.data_schematic.lerobot_key_to_keyname(key, embodiment_id)
+                if key_name is not None:
+                    processed_batch[embodiment_id][key_name] = value
+            
+            ac_key = self.ac_keys[embodiment_id]
+            if len(processed_batch[embodiment_id][ac_key].shape) != 3:
+                raise ValueError("Action shape in batch is not 2")
+            
+            B, S, _ = processed_batch[embodiment_id][ac_key].shape
+            device = processed_batch[embodiment_id][ac_key].device
+            processed_batch[embodiment_id]["pad_mask"]  = torch.ones(B, S, 1, device=device)
+            processed_batch[embodiment_id] = self.data_schematic.normalize_data(processed_batch, embodiment_id)
 
+        return processed_batch
+
+    @override
     def forward_training(self, batch):
-    
+        """
+        One iteration of training. Sequentially, forward pass loss, Compute forward pass and compute losses.  Return predictions dictionary.  HPT also calculates loss here.
+        Args:
+            batch (dict): dictionary with torch.Tensors sampled
+                from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
+        Returns:
+            predictions (dict): {ac_key: torch.Tensor (B, Seq, D), loss_key_name: torch.Tensor (1)}
+        """
+
+        predictions = OrderedDict()
+        for embodiment_id, _batch in batch.items():
+            cam_keys = self.camera_keys[embodiment_id]
+            proprio_keys = self.proprio_keys[embodiment_id]
+            lang_keys = self.lang_keys[embodiment_id]
+            ac_key = self.ac_keys[embodiment_id]
+            data = self._robomimic_to_hpt_data(_batch[embodiment_id], cam_keys, proprio_keys, lang_keys, ac_key)
+            embodiment_name = get_embodiment(embodiment_id).lower()
+            hpt_batch = {
+                "domain" : embodiment_name, # readability on config side
+                "data" : data
+            }
+
+            loss = self.nets["policy"].compute_loss(hpt_batch)
+
+            predictions[f"{embodiment_name}_{ac_key}"] = _batch[embodiment_id][ac_key]
+            predictions[f"{embodiment_name}_loss"] = loss
+        
+        return predictions
+
+    @override     
     def forward_eval(self, batch):
-    
+        """
+        Compute forward pass and return network outputs in @predictions dict.
+        Unnormalize data here.
+        Args:
+            batch (dict): dictionary with torch.Tensors sampled
+                from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
+        Returns:
+            unnorm_preds (dict): {<embodiment_name>_<ac_key>: torch.Tensor (B, Seq, D)}
+        """
+        unnorm_preds = {}
+
+        for embodiment_id, _batch in batch:
+            cam_keys = self.camera_keys[embodiment_id]
+            proprio_keys = self.proprio_keys[embodiment_id]
+            lang_keys = self.lang_keys[embodiment_id]
+            ac_key = self.ac_keys[embodiment_id]
+            data = self._robomimic_to_hpt_data(_batch[embodiment_id], cam_keys, proprio_keys, lang_keys, ac_key)
+
+            embodiment_name = get_embodiment(embodiment_id).lower()
+            hpt_batch = {
+                "domain" : embodiment_name, # readability on config side
+                "data" : data
+            }
+
+            actions = self.nets["policy"].forward(hpt_batch["domain"], hpt_batch["data"])
+            predictions = OrderedDict()
+            predictions[ac_key] = actions
+
+            unnorm_actions = self.data_schematic.unnormalize_data(predictions, embodiment_id)
+            unnorm_preds[f"{embodiment_name}_{ac_key}"] = unnorm_actions
+        
+        return unnorm_preds
+
+    @override
     def forward_eval_logging(self, batch):
+        """
+        Called by pl_model to generate a dictionary of metrics and an image visualization
+        Args:
+            batch (dict): dictionary with torch.Tensors sampled
+                from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
+        Returns:
+            metrics (dict):
+                metricname: value (float)
+            image: (B, 3, H, W)
+        """
+        preds = self.forward_eval(batch)
 
+        metrics = {}
+        images_dict = {}
+        mse = MeanSquaredError()
+
+        for embodiment_id, _batch in batch:
+            _batch = self.data_schematic.unnormalize_data(batch, embodiment_id)
+            embodiment_name = get_embodiment(embodiment_id).lower()
+            ac_key = self.ac_keys[embodiment_id]
+            metrics[f"Valid/{embodiment_name}_{ac_key}_paired_mse_avg"] = mse(
+                                                                            preds[f"{embodiment_name}_{ac_key}"].cpu(), 
+                                                                            _batch[embodiment_id][ac_key].cpu()
+                                                                            )
+            metrics[f"Valid/{embodiment_name}_{ac_key}_final_mse_avg"] = mse(
+                                                                            preds[f"{embodiment_name}_{ac_key}"][:, -1].cpu(), 
+                                                                            _batch[embodiment_id][ac_key][:, -1].cpu()
+                                                                            )
+
+            ims = self.visualize_preds(preds, _batch)
+            images_dict[embodiment_id] = ims
+
+        return metrics, images_dict
+
+    @override
     def visualize_preds(self, preds, batch):
-    
+        """
+        Helper function to visualize predictions on top of images
+        Args:
+            preds (dict): {ac_key: torch.Tensor (B, Seq, D)}
+            batch (dict): {ac_key: torch.Tensor (B, Seq, D), front_img_1: torch.Tensor (B, 3, H, W), embodiment: torch.Tensor (1)}
+        Returns:
+            ims (np.ndarray): (B, H, W, 3) - images with actions drawn on top
+        """
+        embodiment_id = batch["embodiment"].item()
+        embodiment_name = get_embodiment(embodiment_id).lower()
+        ac_key = self.ac_keys[embodiment_id]
+
+        viz_img_key = self.data_schematic.viz_img_key()[embodiment_id]
+        ims = (batch[viz_img_key].cpu().numpy().transpose((0, 2, 3, 1)) * 255).astype(np.uint8)
+        preds = preds[f"{embodiment_name}_{ac_key}"]
+        gt = batch[ac_key]
+
+        for b in range(ims.shape[0]):
+            if preds.shape[-1] == 7 or preds.shape[-1] == 14:
+                ac_type = "joints"
+            elif preds.shape[-1] == 3 or preds.shape[-1] == 6:
+                ac_type = "xyz"
+            else:
+                raise ValueError(f"Unknown action type with shape {preds.shape}")
+
+            arm = "right" if preds.shape[-1] == 7 or preds.shape[-1] == 3 else "both"
+            ims[b] = draw_actions(ims[b], ac_type, "Purples", preds[b].cpu().numpy(), self.camera_transforms.extrinsics, self.camera_transforms.intrinsics, arm=arm)
+
+            ims[b] = draw_actions(ims[b], ac_type, "Greens", gt[b].cpu().numpy(), self.camera_transforms.extrinsics, self.camera_transforms.intrinsics, arm=arm)
+
+        return ims
+
+    @override
     def compute_losses(self, predictions, batch):
+        """
+        Compute losses based on network outputs in @predictions dict, using reference labels in @batch.
+        Args:
+            predictions (dict): dictionary containing network outputs, from @forward_training
+            batch (dict): dictionary with torch.Tensors sampled
+                from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
+        Returns:
+            losses (dict): dictionary of losses computed over the batch
+                loss_key_name: torch.Tensor (1)
+        """
+        total_action_loss = torch.Tensor(0).to(self.device)
+        loss_dict = OrderedDict()
+        for embodiment_id, _batch in batch.items():
+            embodiment_name = get_embodiment(embodiment_id).lower()
+            total_action_loss += predictions[f"{embodiment_name}_loss"]
+            loss_dict[f"{embodiment_name}_loss"] = predictions[f"{embodiment_name}_loss"]
+        
+        loss_dict["action_loss"] = total_action_loss
+
+        return loss_dict
     
+    @override
     def log_info(self, info):
+        """
+        Process info dictionary from @train_on_batch to summarize
+        information to pass to tensorboard for logging.
+        Args:
+            info (dict): dictionary of losses returned by compute_losses
+                losses:
+                    loss_key_name: torch.Tensor (1)
+        Returns:
+            loss_log (dict): name -> summary statistic
+        """
+        log = OrderedDict()
+        log["Loss"] = info["losses"]["action_loss"].item()
+        for loss_key, loss in info["losses"].items():
+            log[loss_key] = loss.item()
+        if "policy_grad_norms" in info:
+            log["Policy_Grad_Norms"] = info["policy_grad_norms"]
+        return log
 
-    def _modality_check(self, batch):
+    def _robomimic_to_hpt_data(self, batch, cam_keys, proprio_keys, lang_keys, ac_key):
+        """
+        helper method that returns data in the format required for the HPT model
+        """
+        data = {}
 
-    def _robomimic_to_hpt_data(self, batch)
+        for key in proprio_keys:
+            if key in batch: 
+                data["state"] = batch[key].unsqueeze(1)
+        
+        for key in cam_keys:
+            if key in batch:
+                _data = batch[key]
+                if not torch.all(_data == 0):
+                    if self.nets.training and key in self.encoders:
+                        _data = self.train_image_augs(_data)
+                    elif self.eval_image_augs and key in self.encoders:
+                        _data = self.eval_image_augs(_data)
+            
+                data[key] = _data.unsqueeze(1).unsqueeze(1)
+
+        for key in lang_keys:
+            if key in batch:
+                data[key] = batch[key]
+        
+        data["pad_mask"] = batch["pad_mask"]
+        data["embodiment"] = batch["embodiment"]
+
+        data["action"] = batch[ac_key]
+
+        return data
+
+
         
     
 
