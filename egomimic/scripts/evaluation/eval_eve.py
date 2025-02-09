@@ -110,7 +110,7 @@ class Eve(Eval):
 
         log.info("Instantiated model!")
 
-        node = create_interbotix_global_node('eve')
+        node = create_interbotix_global_node('aloha')
         self.env = make_real_env(node, active_arms=self.arm, setup_robots=True)
 
         self.data_schematic = self.model.model.data_schematic
