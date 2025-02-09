@@ -58,6 +58,9 @@ Debug (run on a compute node )
 Submitit (Run this on slurm)
 `python egomimic/trainHydra.py -m launch_params.gpus_per_node=<gpus per node> launch_params.nodes=<nodes> name=<name> description=<>`
 
+Eval (add your own rollout class in [``egomimic/evaluation``](./egomimic/evaluation/) and update [``egomimic/hydra_configs/train.yaml``](./egomimic/hydra_configs/train.yaml))
+`python egomimic/trainHydra.py train=false eval=true`
+
 ## Submitit modification
 Tip: after you launch via submitit, you'll notice that the command won't finish executing.  If you want it to end the command after you launch a job, edit the following file
 
