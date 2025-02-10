@@ -26,7 +26,7 @@ pip install imageio[ffmpeg]
 pip install -e external/robomimic
 pip install -e external/rldb
 pip install -e external/rldb/external/lerobot
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 # UV
 ```
@@ -40,7 +40,7 @@ uv pip install imageio[ffmpeg]
 uv pip install -e external/robomimic
 uv pip install -e external/rldb
 uv pip install -e external/rldb/external/lerobot
-uv pip install -e .
+uv pip install --no-build-isolation -e .
 ```
 
 Set `git config --global submodule.recurse true` if you want `git pull` to automatically update the submodule as well.
