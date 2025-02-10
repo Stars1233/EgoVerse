@@ -99,7 +99,7 @@ class AriaVRSExtractor:
     TAGS = ["aria", "robotics", "vrs"]
 
     @staticmethod
-    def process_episode(episode_path, arm, prestack=False, low_res=True):
+    def process_episode(episode_path, arm, prestack=False, low_res=False):
         """
         Extracts all feature keys from a given episode and returns as a dictionary
         Parameters

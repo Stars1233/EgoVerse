@@ -119,7 +119,7 @@ class AlohaHD5Extractor:
     TAGS = ["eve", "robotics", "hdf5"]
 
     @staticmethod
-    def process_episode(episode_path, arm, extrinsics, prestack=False, low_res=True):
+    def process_episode(episode_path, arm, extrinsics, prestack=False, low_res=False):
         """
         Extracts all feature keys from a given episode and returns as a dictionary
         Parameters

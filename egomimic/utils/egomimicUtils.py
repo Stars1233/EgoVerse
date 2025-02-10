@@ -60,7 +60,8 @@ EXTRINSICS = {
 }
 
 INTRINSICS = {
-    "base": ARIA_INTRINSICS_HALF
+    "base": ARIA_INTRINSICS
+    "base_half": ARIA_INTRINSICS_HALF
 }
 
 class CameraTransforms:
