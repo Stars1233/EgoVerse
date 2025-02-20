@@ -171,18 +171,21 @@ class AriaVRSExtractor:
         #TODO: this will be useful for the future - when we add other camera modalities
         camera_key = AriaVRSExtractor.get_cameras("front_img_1")[0]
 
+        # numpy images (B, H, W, C)
         images = AriaVRSExtractor.get_images(
                                             vrs_reader=vrs_reader,
                                             stream_ids=stream_ids,
                                             stream_timestamps_ns=stream_timestamps_ns                              
                                             )
 
-        images = torch.from_numpy(images).permute(0, 3, 1, 2).float()
-
         if low_res:
-            images = F.interpolate(images, size=(240, 320), mode='bilinear', align_corners=False)
-        
-        images = images.byte().numpy()
+            resized_image_list = []
+            for image in images:
+                resized_image = cv2.resize(image, (320, 240), interpolation=cv2.INTER_LINEAR)
+                resized_image_list.append(resized_image)
+            images = np.array(resized_image_list)
+
+        images = images.transpose((0, 3, 1, 2))
 
         # actions
         actions = AriaVRSExtractor.get_action(
