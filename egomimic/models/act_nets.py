@@ -2,8 +2,52 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from typing import Optional, Callable, Any 
-from robomimic.models.transformers import PositionalEncoding
 from torch.distributions import Normal
+import math
+
+class PositionalEncoding(nn.Module):
+    """
+    Taken from https://pytorch.org/tutorials/beginner/transformer_tutorial.html.
+    """
+
+    def __init__(self, embed_dim):
+        """
+        Standard sinusoidal positional encoding scheme in transformers.
+
+        Positional encoding of the k'th position in the sequence is given by:
+            p(k, 2i) = sin(k/n^(i/d))
+            p(k, 2i+1) = sin(k/n^(i/d))
+
+        n: set to 10K in original Transformer paper
+        d: the embedding dimension
+        i: positions along the projected embedding space (ranges from 0 to d/2)
+
+        Args:
+            embed_dim: The number of dimensions to project the timesteps into.
+        """
+        super().__init__()
+        self.embed_dim = embed_dim
+
+    def forward(self, x):
+        """
+        Input timestep of shape BxT
+        """
+        position = x
+
+        # computing 1/n^(i/d) in log space and then exponentiating and fixing the shape
+        div_term = (
+            torch.exp(
+                torch.arange(0, self.embed_dim, 2, device=x.device)
+                * (-math.log(10000.0) / self.embed_dim)
+            )
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .repeat(x.shape[0], x.shape[1], 1)
+        )
+        pe = torch.zeros((x.shape[0], x.shape[1], self.embed_dim), device=x.device)
+        pe[:, :, 0::2] = torch.sin(position.unsqueeze(-1) * div_term)
+        pe[:, :, 1::2] = torch.cos(position.unsqueeze(-1) * div_term)
+        return pe.detach()
 
 class Transformer(nn.Module):
     '''

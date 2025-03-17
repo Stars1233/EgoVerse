@@ -21,7 +21,6 @@ from rldb.utils import get_embodiment_id, get_embodiment
 from egomimic.utils.egomimicUtils import nds
 from egomimic.utils.egomimicUtils import get_sinusoid_encoding_table, EinOpsRearrange, download_from_huggingface, STD_SCALE
 import matplotlib.pyplot as plt
-import robomimic.utils.obs_utils as ObsUtils
 
 import numpy as np
 
