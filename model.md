@@ -1,4 +1,4 @@
-# Guide to Adding Additional States and Action Spaces to the Codebase
+# Guide to the HPT Model
 
 ## Step 1 - Registering a New Embodiment
 
