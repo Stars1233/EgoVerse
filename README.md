@@ -18,7 +18,7 @@ This repository contains the data processing and training code for EgoVerse and 
 
 # Conda
 ```
-git clone --recursive git@github.com:GaTech-RL2/EgoMimic-dev.git
+git clone --recursive git@github.com:GaTech-RL2/EgoVerse.git
 cd EgoMimic
 conda env create -f environment.yaml
 conda activate emimic
@@ -31,7 +31,7 @@ pip install -e .
 ```
 uv venv emimic --python 3.10
 source emimic/bin/activate
-git clone --recursive git@github.com:GaTech-RL2/EgoMimic-dev.git
+git clone --recursive git@github.com:GaTech-RL2/EgoVerse.git
 cd EgoMimic
 uv pip install -r requirements.txt
 uv pip install -e external/rldb
