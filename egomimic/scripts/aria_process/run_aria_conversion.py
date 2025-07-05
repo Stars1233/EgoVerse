@@ -35,7 +35,7 @@ def vrs_bundles(task_dir: Path):
             continue
         yield vrs, jsonf, mps
 
-@ray.remote(num_cpus=12, memory=16 * 1024**3)
+@ray.remote(num_cpus=8, memory=16 * 1024**3)
 def convert_one(tmp_dir: str, out_dir: str,
                 dataset_name: str, arm: str) -> tuple[str, int]:
     """
