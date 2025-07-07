@@ -16,7 +16,8 @@ TMP_ROOT        = Path.home() / "temp_mps_processing"
 def load_task_map() -> dict[str, str]:
     """Read task_map.csv → {task: arm} (arm lowered)."""
     with TASK_MAP_CSV.open() as f:
-        return {r["task"]: r["arm"].lower() for r in csv.DictReader(f)}
+        return {r["task"].strip(): r["arm"].strip().lower()
+                for r in csv.DictReader(f)}
 
 def already_done() -> set[str]:
     """Return set of ‘task/stem’ keys already in the global CSV."""
