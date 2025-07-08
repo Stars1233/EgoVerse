@@ -60,7 +60,7 @@ os.environ["HF_HOME"] = "~/.cache/huggingface"
 
 HORIZON_DEFAULT = 10
 STEP_DEFAULT = 3.0
-EPISODE_LENGTH = 300
+EPISODE_LENGTH = 100
 CHUNK_LENGTH_ACT = 100
 
 ROTATION_MATRIX = np.array([[0, 1, 0], 
