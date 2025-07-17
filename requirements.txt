@@ -35,16 +35,8 @@ zarr
 tabulate
 transformers
 timm
-<<<<<<< HEAD
-abc
-geomloss
-tslearn
-boto3
-ray
-=======
 boto3
 ray
 abc
 geomloss
 tslearn
->>>>>>> origin/hpt-fm-diff-pr
