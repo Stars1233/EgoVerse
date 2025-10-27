@@ -44,7 +44,7 @@ initialization_commands:
   - sudo pip3 install --no-input --force-reinstall cloudpathlib
   - curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
   - sudo unzip -qq /tmp/awscliv2.zip -d /tmp
-  - sudo /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update -yq || true
+  - sudo /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update || true
 
 setup_commands:
   - sudo mkdir -p /mnt/raw /mnt/processed
@@ -89,7 +89,7 @@ setup_commands:
   - |
       echo "Running setup_secret.sh..."
       chmod +x ~/EgoVerse/egomimic/utils/aws/setup_secret.sh
-      bash ~/EgoVerse/egomimic/utils/aws/setup_secret.sh || true
+      bash ~/EgoVerse/egomimic/utils/aws/setup_secret.sh
 
   # ───── Make run_s3_writer.sh executable ─────
   - |
@@ -99,6 +99,6 @@ setup_commands:
   - |
       (crontab -l 2>/dev/null | grep -v run_s3_writer.sh ; \
        echo 'CRON_TZ=America/New_York'; \
-       echo '0 * * * * /home/ubuntu/EgoVerse/egomimic/utils/aws/run_s3_writer.sh >> /home/ubuntu/s3_writer.log 2>&1') \
+       echo '0 * * * * /home/ubuntu/EgoVerse/egomimic/utils/aws/run_s3_writer.sh > /home/ubuntu/s3_writer.log 2>&1') \
        | crontab - || true
   - crontab -l || true
