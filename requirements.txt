@@ -43,3 +43,5 @@ geomloss
 tslearn
 sqlalchemy
 psycopg[binary]
+boto3
+typing_extensions

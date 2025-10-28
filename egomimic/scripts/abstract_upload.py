@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,12 +26,14 @@ class Uploader():
         # Metadata configuration - get keys from TableRow to ensure schema consistency
         self.metadata_keys = [
             field for field in TableRow.__dataclass_fields__.keys() 
-            if field not in ["episode_hash", "embodiment", "num_frames", "processed_path", "mp4_path", "is_eval", "eval_score", "eval_success"]
+            if field not in ["episode_hash", "embodiment", "num_frames", "processed_path", "mp4_path", "is_eval", "eval_score", "eval_success", "is_deleted"]
         ]
         
         # Auto-fill and batch functionality
         self.previous_inputs = {}
-        self.file_paths = []
+        self.uploaded_files = []
+        self.upload_lock = None  # for async function and file upload verification
+
         self.batch_metadata = None
         self.use_batch_metadata = False
         self.batch_metadata_asked = False
@@ -39,18 +42,57 @@ class Uploader():
         """Main method to run the uploader."""
         print(f"\n🚀 Starting {self.embodiment.upper()} Uploader")
         
+        # Initialize asyncio lock for thread-safe operations
+        self.upload_lock = asyncio.Lock()
+        
         uploads = []
         self.set_directory()
         
         # Collect all files first to show progress
         all_items = list(self.collect_files(self.local_dir))
+
+        print("\n📁 Files found:")
+        for item in all_items:
+            if isinstance(item, tuple):
+                for file in item:
+                    print(f"  {file.name}")
+            else:
+                print(f"  {item.name}")
+
+        # Handle batch metadata prompt for all cases
+        if not self.batch_metadata_asked:
+            self.batch_metadata_asked = True
+            
+            # Create dynamic prompt based on TableRow fields
+            field_names = ", ".join(self.metadata_keys)
+            batch_prompt = (
+                f"\n🤔 Do all files share the same metadata ({field_names})? (y/N): "
+            )
+            response = input(batch_prompt)
+            
+            if response.lower() == 'y':
+                print("\n" + "=" * 60)
+                print("📋 BATCH METADATA COLLECTION")
+                print("Enter metadata that will be applied to ALL files:")
+                print("=" * 60)
+                
+                # Initialize batch metadata from TableRow structure
+                self.batch_metadata = {
+                    "embodiment": self.embodiment,
+                    "episode_hash": "",  # Will be set per file
+                }
+                
+                for key in self.metadata_keys:
+                    value = self._collect_metadata_value(key)
+                    self.batch_metadata[key] = value
+                
+                print(f"\n✅ Batch metadata collected! "
+                      f"This will be applied to all {len(all_items)} file groups.")
+                self.use_batch_metadata = True
+            else:
+                print("\n📝 Will collect metadata for each file individually.")
+                self.use_batch_metadata = False
         
-        if not all_items:
-            print(f"❌ No {self.datatype} files found in the directory.")
-            print("Please check the directory path and file extensions.")
-            return
-        
-        print(f"\n📁 Found {len(all_items)} file groups to process")
         print("=" * 60)
         
         for i, item in enumerate(all_items, 1):
@@ -102,7 +144,7 @@ class Uploader():
                     self.upload_file(extra_file, new_name=f"{timestamp}{extra_file.suffix}")
                 ))
 
-        print(f"\n🔄 Starting uploads for {len(uploads)} files...")
+        print(f"\n🔄 Starting concurrent uploads for {len(uploads)} files...")
         print("=" * 60)
         
         await asyncio.gather(*uploads)
@@ -112,6 +154,8 @@ class Uploader():
         print(f"   ☁️  Uploaded {len(uploads)} files to S3")
         print(f"   🎯 Destination: s3://{self.bucket_name}/{self.s3_base_prefix}")
         print("=" * 60)
+
+        self.delete_dir()
 
     def set_directory(self):
         """
@@ -138,8 +182,13 @@ class Uploader():
             if not dir_path.is_dir():
                 print(f"❌ Error: '{dir_path}' is not a directory. Please enter a directory path.")
                 continue
+                
+            if not any(dir_path.iterdir()):
+                print(f"❌ Error: Directory '{dir_path}' is empty. Please select a directory with files.")
+                continue
             
             print(f"✅ Selected directory: {dir_path}")
+            print("found files:")
             self.local_dir = dir_path
             self.directory_prompted = True
             break
@@ -159,41 +208,6 @@ class Uploader():
         # Prompt for directory on first call if not provided during initialization
         if not self.directory_prompted and self.local_dir is None:
             self.set_directory()
-        
-        # Handle batch metadata prompt on first file only
-        if not self.batch_metadata_asked and len(self.file_paths) > 1:
-            self.batch_metadata_asked = True
-            print(f"\n📊 Found {len(self.file_paths)} files to upload.")
-            
-            # Create dynamic prompt based on TableRow fields
-            field_names = ", ".join(self.metadata_keys)
-            batch_prompt = (
-                f"🤔 Do all files share the same metadata ({field_names})? (y/N): "
-            )
-            response = input(batch_prompt)
-            
-            if response.lower() == 'y':
-                print("\n" + "=" * 60)
-                print("📋 BATCH METADATA COLLECTION")
-                print("Enter metadata that will be applied to ALL files:")
-                print("=" * 60)
-                
-                # Initialize batch metadata from TableRow structure
-                self.batch_metadata = {
-                    "embodiment": self.embodiment,
-                    "episode_hash": "",  # Will be set per file
-                }
-                
-                for key in self.metadata_keys:
-                    value = self._collect_metadata_value(key)
-                    self.batch_metadata[key] = value
-                
-                print(f"\n✅ Batch metadata collected! "
-                      f"This will be applied to all {len(self.file_paths)} files.")
-                self.use_batch_metadata = True
-            else:
-                print("\n📝 Will collect metadata for each file individually.")
-                self.use_batch_metadata = False
         
         # Collect or use metadata based on selected mode
         if self.use_batch_metadata and self.batch_metadata:
@@ -313,4 +327,60 @@ class Uploader():
 
         print(f"   ☁️  Uploading {Path(file_path).name} → s3://{self.bucket_name}/{s3_key}")
         s3.upload_file(str(file_path), self.bucket_name, s3_key)
+        
+        # Thread-safe append to uploaded_files list
+        async with self.upload_lock:
+            self.uploaded_files.append((file_path, s3_key))
+        
         print(f"   ✅ Completed: {Path(file_path).name}")
+    
+    def delete_dir(self):
+        """Delete temporary directory if needed."""
+        print("Do you want to delete the local files? (y/N): ")
+        response = input().strip()
+        if response.lower() == 'y':
+            print("Are you extra sure? This action cannot be undone. (y/N): ")
+            response2 = input().strip()
+            if response2.lower() == 'y':
+                self.__deletion_cycle()
+            else:
+                print("❌ Deletion cancelled.")
+        else:
+            print("❌ Deletion cancelled.")
+
+    def __deletion_cycle(self):
+        for file, s3_key in self.uploaded_files:
+            local_size = os.path.getsize(file)
+
+            s3_response = self.s3.head_object(Bucket=self.bucket_name, Key=s3_key)
+            s3_size = s3_response['ContentLength']
+
+            if local_size == s3_size:
+                
+                if local_size < 50 * 1024 * 1024:
+                    local_checksum = self.checksum_local(Path(file))
+                    s3_etag = s3_response['ETag'].strip('"')
+                    if local_checksum == s3_etag:
+                        os.remove(file)
+                        print(f"Deleted (checksum verified): {file}")
+                    else:
+                        print(f"Checksum mismatch for {file}. Local: {local_checksum}, S3: {s3_etag}. Skipping deletion.")
+                else:
+                    os.remove(file)
+                    print(f"Deleted (size verified): {file}")
+            else:
+                print(f"Size mismatch for {file}. Local: {local_size}, S3: {s3_size}. Skipping deletion.")
+
+    def checksum_local(self, file_path):
+        if file_path.is_file():
+            hash_obj = getattr(hashlib, "md5")()
+            with open(file_path, 'rb') as f:
+                while chunk := f.read(8192):
+                    hash_obj.update(chunk)
+                    hash = hash_obj.hexdigest()
+        return hash
+
+    def check_etag_s3(self, key):
+        response = self.s3.head_object(Bucket=self.bucket_name, Key=key)
+        tag = response['ETag'].strip('"')
+        return tag
