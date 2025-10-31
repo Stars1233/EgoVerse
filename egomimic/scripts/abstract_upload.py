@@ -310,7 +310,7 @@ class Uploader():
         else:
             # Windows: st_ctime gives creation time
             # Linux: st_ctime gives last metadata change time
-            timestamp_ms = int(stats.st_ctime * 1000)
+            timestamp_ms = int(stats.st_mtime * 1000)
 
         return timestamp_ms
 
