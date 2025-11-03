@@ -215,8 +215,19 @@ def launch(dry: bool = False, skip_if_done: bool = False):
         description = row.task_description or ""
 
         if dry:
+            ds_path = (PROCESSED_ROOT / f"{name}_processed").resolve()
+            stem = vrs.stem
+            mp4_candidate = ds_path / f"{stem}_video.mp4"
+
+            mapped_ds = _map_processed_local_to_remote(ds_path)
+            mapped_mp4 = _map_processed_local_to_remote(mp4_candidate)
+
             print(
-                f"[DRY] {name}: arm={arm} → {out_dir}/{dataset_name} | desc='{description[:60]}'"
+                f"[DRY] {name}: arm={arm} | out_dir={out_dir}/{dataset_name}\n"
+                f"      desc='{description[:60]}'\n"
+                f"      would write to SQL:\n"
+                f"        processed_path={mapped_ds}\n"
+                f"        mp4_path={mapped_mp4}"
             )
             continue
 
