@@ -175,7 +175,6 @@ def convert_one_bundle(
             matches = list(ds_path.glob(f"*{stem}*_video.mp4"))
             mp4_str = str(matches[0]) if matches else ""
 
-        breakpoint()
         return str(ds_path), mp4_str, frames
 
     except Exception as e:
@@ -258,7 +257,8 @@ def launch(dry: bool = False, skip_if_done: bool = False):
             print(f"[WARN] Episode {episode_key}: row disappeared before update?")
             continue
         
-
+        breakpoint()
+            
         row.num_frames = frames if isinstance(frames, int) else -1
         
         if row.num_frames > 0:
