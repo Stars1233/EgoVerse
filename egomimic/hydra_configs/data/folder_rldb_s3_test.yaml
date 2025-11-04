@@ -5,12 +5,12 @@ train_datasets:
     _target_: rldb.utils.S3RLDBDataset
     bucket_name: "rldb"
     mode: train
-    embodiment: "ARIA_BIMANUAL"
+    embodiment: "aria_bimanual"
     filters: 
-      lab: "eth"
-      scene: "scene_10"
-      task: "fold_cloth/"
-      recording: "recording_1"
+      operator: "Aniketh"
+      lab: "rl2"
+      scene: "12"
+      task: "fold clothes"
     local_files_only: True
 
 valid_datasets:
@@ -18,12 +18,12 @@ valid_datasets:
     _target_: rldb.utils.S3RLDBDataset
     bucket_name: "rldb"
     mode: valid
-    embodiment: "ARIA_BIMANUAL"
+    embodiment: "aria_bimanual"
     filters: 
-      lab: "eth"
-      scene: "scene_10"
-      task: "fold_cloth/"
-      recording: "recording_1"
+      operator: "Aniketh"
+      lab: "rl2"
+      scene: "12"
+      task: "fold clothes"
     local_files_only: True
 
 train_dataloader_params:
