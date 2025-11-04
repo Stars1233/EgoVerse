@@ -138,7 +138,6 @@ def convert_one_bundle(
     for t in targets:
         if not ensure_path_ready(t):
             print(f"[ERR] missing {t}", flush=True)
-            traceback.print_exc()
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return "", "", -1
         link = tmp_dir / t.name
@@ -180,7 +179,8 @@ def convert_one_bundle(
         return str(ds_path), mp4_str, frames
 
     except Exception as e:
-        print(f"[FAIL] {stem}: {e}", flush=True)
+        err_msg = f"[FAIL] {stem}: {e}\n{traceback.format_exc()}"
+        print(err_msg, flush=True)
         return str(ds_path), "", -1
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
