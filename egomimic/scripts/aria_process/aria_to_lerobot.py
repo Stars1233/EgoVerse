@@ -1107,9 +1107,10 @@ class DatasetConverter:
         # Clean the cache if the dataset already exists
         if os.path.exists(output_dir / name):
             shutil.rmtree(output_dir / name)
+        
+        self._out_base = Path(output_dir)
 
         output_dir = output_dir / name
-        self._out_base = Path(output_dir)
 
         self.dataset = LeRobotDataset.create(
             repo_id=self.dataset_repo_id,

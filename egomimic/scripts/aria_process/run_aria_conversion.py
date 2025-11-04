@@ -169,7 +169,7 @@ def convert_one_bundle(
             except Exception:
                 frames = -1
 
-        candidate = ds_path / f"{stem}_video.mp4"
+        candidate = ds_parent / f"{stem}_video.mp4"
         if candidate.exists():
             mp4_str = str(candidate)
         else:
@@ -219,7 +219,7 @@ def launch(dry: bool = False, skip_if_done: bool = False):
         if dry:
             ds_path = (PROCESSED_ROOT / f"{name}_processed").resolve()
             stem = vrs.stem
-            mp4_candidate = ds_path / f"{stem}_video.mp4"
+            mp4_candidate = PROCESSED_ROOT / f"{stem}_video.mp4"
 
             mapped_ds = _map_processed_local_to_remote(ds_path)
             mapped_mp4 = _map_processed_local_to_remote(mp4_candidate)
