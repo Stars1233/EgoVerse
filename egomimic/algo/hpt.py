@@ -14,7 +14,7 @@ from egomimic.models.hpt_nets import *
 from egomimic.algo.algo import Algo
 from egomimic.utils.egomimicUtils import draw_actions
 
-from egomimic.utils.egomimicUtils import get_sinusoid_encoding_table, frechet_gaussian_over_time, EinOpsRearrange, download_from_huggingface, STD_SCALE
+from egomimic.utils.egomimicUtils import get_sinusoid_encoding_table, frechet_gaussian_over_time, reverse_kl_from_samples, EinOpsRearrange, download_from_huggingface, STD_SCALE
 from egomimic.utils.egomimicUtils import draw_actions, draw_rotation_text
 
 import numpy as np
@@ -1141,7 +1141,7 @@ class HPT(Algo):
                     samples = self._collect_policy_samples(
                         hpt_batch, ref=gt_tensor, key_name=head_key, M=M
                     )
-                    rkl = self._reverse_kl_from_samples(samples, gt_tensor)
+                    rkl = reverse_kl_from_samples(samples, gt_tensor)
                     metrics[f"Valid/{pred_key_name}_reverse_kl_M{M}"] = rkl.item()
                 
             ims = self.visualize_preds(preds, _batch)
@@ -1268,23 +1268,6 @@ class HPT(Algo):
         if was_training:
             self.nets.train()
         return torch.cat(samples, dim=0)
-    
-    def _reverse_kl_from_samples(self, pred_samples, targets):
-        M, B, T, D = pred_samples.shape
-        BT = B*T
-        const = -0.5 * D * math.log(2.0 * math.pi)
-        
-        A = pred_samples.permute(1, 2, 0, 3).reshape(BT, M, D)
-        MU = targets.reshape(BT, 1, D)
-        
-        d2 = torch.cdist(A, A)**2                              # (BT,M,M)
-        log_q_each = torch.logsumexp(const - 0.5*d2, dim=-1) - math.log(M)  # (BT,M)
-        
-        d2p = ((A - MU)**2).sum(dim=-1)                        # (BT,M)
-        log_p_each = const - 0.5*d2p
-        
-        rkl_each = (log_q_each - log_p_each).mean(dim=-1)      # (BT,)
-        return rkl_each.mean()
             
     def _forward_ot(self, batch, embodiment1_id, embodiment2_id):
         hpt_batch_1 = batch[embodiment1_id]
