@@ -1256,23 +1256,6 @@ def argument_parse():
         "--debug", action="store_true", help="Store only 2 episodes for debug purposes."
     )
 
-    # SLURM-related arguments
-    parser.add_argument(
-        "--overcap",
-        type=str2bool,
-        default=False,
-        help="Flag to indicate if the job should run in the 'overcap' partition.",
-    )
-    parser.add_argument(
-        "--gpus-per-node", type=int, default=1, help="Number of GPUs per node."
-    )
-    parser.add_argument(
-        "--num-nodes", type=int, default=1, help="Number of cluster nodes."
-    )
-    parser.add_argument(
-        "--partition", type=str, default="hoffman-lab", help="SLURM partition/account."
-    )
-
     parser.add_argument(
         "--save-mp4",
         type=str2bool,
