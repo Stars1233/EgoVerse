@@ -32,6 +32,7 @@ from sqlalchemy import (
     text,
 )
 from torch.utils.data import Subset
+from collections.abc import Sequence
 
 from egomimic.utils.aws.aws_sql import (
     TableRow,
@@ -46,6 +47,9 @@ from egomimic.utils.aws.aws_sql import (
 
 logger = logging.getLogger(__name__)
 
+import torch.nn.functional as F
+
+from egomimic.rldb.data_utils import *
 
 # NOTE: To add a new key register, embodiment here. I hope Nadun, Vaibhav you guys have a more principled way of doing this thanks :) - R
 class EMBODIMENT(Enum):
@@ -137,6 +141,53 @@ class RLDBDataset(LeRobotDataset):
         if self.use_task_string:
             self.task_string = kwargs.get("task_string", "")
 
+        self.slow_down_factor = float(kwargs.get("slow_down_factor", 1.0))
+        raw_keys = kwargs.get("slow_down_ac_keys", None)
+        raw_rot_specs = kwargs.get("slow_down_rot_specs", None)
+        
+        if raw_rot_specs is None:
+            self.slow_down_rot_specs = {}
+        else:
+            self.slow_down_rot_specs = dict(raw_rot_specs)
+            
+        for k, v in self.slow_down_rot_specs.items():
+            # v should be a 2-tuple-like: (rot_type, index_ranges)
+            if not (isinstance(v, Sequence) and not isinstance(v, (str, bytes)) and len(v) == 2):
+                raise ValueError(
+                    f"slow_down_rot_specs['{k}'] must be (rot_type, index_ranges), got {type(v)} with value {v}"
+                )
+
+            rot_type, ranges = v
+
+            if rot_type not in ("quat_wxyz", "ypr"):
+                raise ValueError(
+                    f"Rotation type for key '{k}' must be 'quat_wxyz' or 'ypr', got {rot_type}"
+                )
+
+            if not (isinstance(ranges, Sequence) and not isinstance(ranges, (str, bytes))):
+                raise ValueError(
+                    f"Index ranges for slow_down_rot_specs['{k}'] must be a sequence of (start, end) pairs, got {type(ranges)}"
+                )
+
+            for pair in ranges:
+                if not (isinstance(pair, Sequence) and not isinstance(pair, (str, bytes)) and len(pair) == 2):
+                    raise ValueError(
+                        f"Each index range for slow_down_rot_specs['{k}'] must be a (start, end) sequence, got {pair}"
+                    )
+        
+        if raw_keys is None:
+            self.slow_down_ac_keys = []
+        elif isinstance(raw_keys, str):
+            # single key as string
+            self.slow_down_ac_keys = [raw_keys]
+        elif isinstance(raw_keys, Sequence) and not isinstance(raw_keys, (str, bytes)):
+            # list, tuple, Hydra ListConfig, etc.
+            self.slow_down_ac_keys = list(raw_keys)
+        else:
+            raise ValueError(
+                f"slow_down_ac_keys must be str, sequence, or None; got {type(raw_keys)}"
+            )
+        
         if mode == "train":
             super().__init__(
                 repo_id=repo_id,
@@ -204,13 +255,89 @@ class RLDBDataset(LeRobotDataset):
         if self.use_task_string:
             item["high_level_language_prompt"] = self.task_string
 
+        if self.slow_down_ac_keys and self.slow_down_factor > 1.0:
+            for key in self.slow_down_ac_keys:
+                if key in item:
+                    item[key] = self._slow_down_sequence(item[key])
         return item
 
+    def _slow_down_sequence(self, seq, rot_spec=None):
+        """
+        Slow down a sequence of shape (S, D) along the time dimension S.
 
-# TODO(Ryan) : Override individual dataset valid ratios and train modes
+        - S: time steps
+        - D: feature dimension, with any rotation sub-blocks living in slices
+             along D (e.g., [:, 0:4] for quats, [:, 3:6] for ypr).
 
+        Steps:
+        1. Take first S / slow_down_factor steps (shortened trajectory).
+        2. Linearly upsample back to length S.
+        3. For any rotation slices specified in rot_spec, overwrite the
+           linearly interpolated slices with SLERP-based interpolation.
+        """
+        alpha = self.slow_down_factor
+        if alpha is None or alpha <= 1.0:  # no-op
+            return seq
 
+        if seq.ndim != 2:
+            raise ValueError(
+                f"_slow_down_sequence expects seq of shape (S, D). "
+                f"Got shape {seq.shape} with dim={seq.ndim}"
+            )
+
+        S, D = seq.shape
+        S_short = max(1, min(S, int(S / alpha)))
+
+        if S_short == S:
+            return seq  # nothing to do
+
+        # Base: linear interpolation over full feature dimension
+        seq_short = seq[:S_short]  # (S_short, D)
+
+        x = seq_short.transpose(0, 1).unsqueeze(0)  # (1, D, S_short)
+        x_interp = F.interpolate(
+            x, size=S, mode="linear", align_corners=True
+        )  # (1, D, S)
+        out = x_interp.squeeze(0).transpose(0, 1)  # (S, D)
+
+        # If we have rotation specs, overwrite specified feature slices with SLERP output
+        if rot_spec is not None:
+            rot_type, index_ranges = rot_spec
+
+            for (start, end) in index_ranges:
+                if not (0 <= start < end <= D):
+                    raise ValueError(
+                        f"Invalid rotation slice [{start}:{end}] for seq with D={D}"
+                    )
+
+                rot_short = seq_short[:, start:end]  # (S_short, k)
+                k = end - start
+
+                if rot_type == "quat_wxyz":
+                    if k != 4:
+                        raise ValueError(
+                            f"quat slice must have length 4, got {k} for slice [{start}:{end}]"
+                        )
+                    rot_interp = _slow_down_slerp_quat(rot_short, S)  # (S, 4)
+                    out[:, start:end] = rot_interp
+
+                elif rot_type == "ypr":
+                    if k != 3:
+                        raise ValueError(
+                            f"ypr slice must have length 3, got {k} for slice [{start}:{end}]"
+                        )
+                    # ypr -> quat -> slerp -> ypr
+                    quat_short = _ypr_to_quat(rot_short)                # (S_short, 4)
+                    quat_interp = _slow_down_slerp_quat(quat_short, S)  # (S, 4)
+                    ypr_interp = _quat_to_ypr(quat_interp)              # (S, 3)
+                    out[:, start:end] = ypr_interp
+                else:
+                    raise ValueError(f"Unknown rotation type: {rot_type}")
+
+        return out
+        
 class MultiRLDBDataset(torch.utils.data.Dataset):
+    
     def __init__(self, datasets, embodiment, key_map=None):
         self.datasets = datasets
         self.key_map = key_map
@@ -380,6 +507,7 @@ class S3RLDBDataset(MultiRLDBDataset):
         valid_ratio=0.2,
         temp_root="/coc/cedarp-dxu345-0/datasets/egoverse",  # "/coc/flash7/scratch/rldb_temp"
         filters={},
+        **kwargs,
     ):
         temp_root += "/S3_rldb_data"
         filters["robot_name"] = embodiment
@@ -395,7 +523,6 @@ class S3RLDBDataset(MultiRLDBDataset):
 
         datasets = {}
         skipped = []
-
         filtered_paths = self._get_processed_path(filters)
 
         s3_prefix = f"{main_prefix}/{embodiment.strip('/')}/"
@@ -431,7 +558,7 @@ class S3RLDBDataset(MultiRLDBDataset):
                 )
                 skipped.append(collection_path.name)
                 continue
-
+                    
             try:
                 repo_id = collection_path.name
                 dataset = RLDBDataset(
@@ -441,6 +568,7 @@ class S3RLDBDataset(MultiRLDBDataset):
                     mode=mode,
                     percent=percent,
                     valid_ratio=valid_ratio,
+                    **kwargs,
                 )
 
                 if dataset.embodiment != get_embodiment_id(embodiment):
@@ -475,7 +603,6 @@ class S3RLDBDataset(MultiRLDBDataset):
     def _get_processed_path(filters):
         engine = create_default_engine()
         df = episode_table_to_df(engine)
-
         series = pd.Series(filters)
 
         output = df.loc[
