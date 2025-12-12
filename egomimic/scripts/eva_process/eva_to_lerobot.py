@@ -1299,7 +1299,7 @@ def argument_parse():
     # Optional arguments
     parser.add_argument("--description", type=str, default="Eva recorded dataset.", help="Description of the dataset.")
     parser.add_argument("--arm", type=str, choices=["left", "right", "both"], default="both", help="Specify the arm for processing.")
-    parser.add_argument("--extrinsics-key", type=str, default="x5Nov18_3", help="Key to look up camera extrinsics.")
+    parser.add_argument("--extrinsics-key", type=str, default="x5Dec10_2", help="Key to look up camera extrinsics.")
     parser.add_argument("--private", type=str2bool, default=False, help="Set to True to make the dataset private.")
     parser.add_argument("--push", type=str2bool, default=True, help="Set to True to push videos to the hub.")
     parser.add_argument("--license", type=str, default="apache-2.0", help="License for the dataset.")
