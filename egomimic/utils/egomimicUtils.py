@@ -453,7 +453,7 @@ def draw_actions(im, type, color, actions, extrinsics, intrinsics, arm="both", k
             left_actions_drawable = ee_pose_to_cam_frame(left_actions, extrinsics["left"])
             actions_drawable = np.concatenate((left_actions_drawable, right_actions_drawable), axis=0)
         elif arm == "right":
-            right_actions = kinematics_solver.fk_pos(actions[:, :6])
+            right_actions = kinematics_solver.fk_pos(actions[:, 7:13])
             right_actions_drawable = ee_pose_to_cam_frame(right_actions, extrinsics["right"])
             actions_drawable = right_actions_drawable
         elif arm == "left":
@@ -747,6 +747,7 @@ def cam_frame_to_cam_pixels(ee_pose_cam, intrinsics):
     # print("intrinsics: ", intrinsics.shape, ee_pose_cam.shape)
     px_val = intrinsics @ ee_pose_cam.T
     px_val = px_val / px_val[2, :]
+    px_val.T[..., 0]/=3
     # print("2d pos cam frame: ", px_val)
 
     return px_val.T
