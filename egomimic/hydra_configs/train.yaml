@@ -1,10 +1,10 @@
 defaults:
-  - model: hpt_bc_flow_mecka
+  - model: hpt_bc_flow_eva
   - paths: default
   - trainer: debug
   - debug: null
-  - logger: debug
-  - data: multi_data
+  - logger: wandb
+  - data: eva_bc_s3
   - callbacks: null
   - override hydra/launcher: submitit
   - _self_
@@ -33,17 +33,14 @@ launch_params:
   nodes: 1
 
 data_schematic: # Dynamically fill in these shapes from the dataset
-  _target_: rldb.utils.DataSchematic
+  _target_: egomimic.rldb.utils.DataSchematic
   norm_mode: quantile
   schematic_dict:
-    eve_bimanual:
-      base_0_rgb: #batch key
+    eva_right_arm:
+      front_img_1: #batch key
         key_type: camera_keys # key type
         lerobot_key: observations.images.front_img_1 # dataset key
-      left_wrist_0_rgb:
-        key_type: camera_keys
-        lerobot_key: observations.images.left_wrist_img
-      right_wrist_0_rgb:
+      right_wrist_img:
         key_type: camera_keys
         lerobot_key: observations.images.right_wrist_img
       ee_pose:
@@ -61,8 +58,8 @@ data_schematic: # Dynamically fill in these shapes from the dataset
       embodiment:
         key_type: metadata_keys
         lerobot_key: metadata.embodiment
-    aria_bimanual:
-      base_0_rgb:
+    aria_right_arm:
+      front_img_1:
         key_type: camera_keys
         lerobot_key: observations.images.front_img_1
       ee_pose:
@@ -94,9 +91,9 @@ data_schematic: # Dynamically fill in these shapes from the dataset
         key_type: metadata_keys
         lerobot_key: metadata.embodiment
   viz_img_key: 
-    eve_bimanual:
+    eva_right_arm:
       front_img_1
-    aria_bimanual:
+    aria_right_arm:
       front_img_1
     mecka_bimanual:
       base_0_rgb
