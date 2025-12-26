@@ -1,4 +1,0 @@
-opencv-python
-pupil-apriltags
-redis
-urdfpy
