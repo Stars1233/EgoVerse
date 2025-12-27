@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ====== config (edit these) ======
 REMOTE_USER_HOST="rpunamiya6@sky1.cc.gatech.edu"
-REMOTE_PATH="/coc/flash7/rpunamiya6/Projects/EgoVerse/logs/everse_object_in_container/robot_bc_fixed_extrinsics_2025-12-15_18-12-16"
+REMOTE_PATH="/coc/flash7/rpunamiya6/Projects/EgoVerse/logs/everse_object_in_container/cotrain_cartesian_fixed_data_lowlr_2025-12-22_10-48-14"
 LOCAL_PATH="./egomimic/robot/models/"
 # =================================
 
