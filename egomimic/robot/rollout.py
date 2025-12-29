@@ -1,4 +1,3 @@
-from email import policy
 import os
 import time
 import h5py
@@ -15,7 +14,7 @@ from egomimic.rldb.utils import EMBODIMENT, get_embodiment, get_embodiment_id, R
 from egomimic.pl_utils.pl_model import ModelWrapper
 
 from robot_utils import RateLoop
-from egomimic.utils.egomimicUtils import CameraTransforms, draw_actions, cam_frame_to_base_frame, ee_pose_to_cam_frame, base_frame_to_cam_frame
+from egomimic.utils.egomimicUtils import CameraTransforms, draw_actions, cam_frame_to_base_frame, ee_pose_to_cam_frame, base_frame_to_cam_frame, interpolate_arr, interpolate_arr_euler
 from egomimic.robot.eva.eva_kinematics import EvaMinkKinematicsSolver
 sys.path.append(os.path.join(os.path.dirname(__file__), "eva/eva_ws/src/eva"))
 
@@ -117,24 +116,66 @@ class ReplayRolloutLerobot(Rollout):
         self.data_loader = data_loader
         self.i = 0
         self.actions_key = "actions_cartesian" if cartesian else "actions_joints"
-        self.actions = np.empty((0, 7), dtype=np.float32)
-    
+        self.actions = None
+	
     def rollout_step(self, i):
         while i >= self.i:
-            batch = next(self.iter)
-            cur_actions = batch[self.actions_key].cpu().numpy()[:,0,:] # (B, N, 7) -> (B, 7)
+            try:
+                batch = next(self.iter)
+            except StopIteration:
+                self.iter = iter(self.data_loader)
+                batch = next(self.iter)
+
+            cur_actions = batch[self.actions_key].cpu().numpy()[:, 0, :]  # (B, 7) or (B, 14)
+
             if self.cartesian:
-                gripper_pose = cur_actions[:, 6:7] * 0.08 # TODO: make this in robot config
-                cur_actions = cam_frame_to_base_frame(cur_actions, self.extrinsics[self.arm])
-                cur_actions = np.concatenate([cur_actions, gripper_pose], axis=1)
-           
-            self.actions = np.concatenate([self.actions, cur_actions], axis=0)
+                if self.arm == "both":
+                    left_actions = cur_actions[:, :7]
+                    right_actions = cur_actions[:, 7:14]
+
+                    left_grip = (left_actions[:, 6:7]).copy()
+                    right_grip = (right_actions[:, 6:7]).copy()
+
+                    transformed_left = cam_frame_to_base_frame(
+                        left_actions[:, :6].copy(), self.extrinsics["left"]
+                    )
+                    transformed_right = cam_frame_to_base_frame(
+                        right_actions[:, :6].copy(), self.extrinsics["right"]
+                    )
+
+                    left_out = np.hstack([transformed_left, left_grip])
+                    right_out = np.hstack([transformed_right, right_grip])
+                    cur_actions = np.hstack([left_out, right_out])
+                else:
+                    grip = (cur_actions[:, 6:7]).copy()
+                    transformed_6dof = cam_frame_to_base_frame(
+                        cur_actions[:, :6].copy(), self.extrinsics[self.arm]
+                    )
+                    cur_actions = np.hstack([transformed_6dof, grip])
+
+            cur_actions = cur_actions.astype(np.float32, copy=False)
+
+            if self.actions is None or self.actions.shape[0] == 0:
+                self.actions = cur_actions
+            else:
+                self.actions = np.concatenate([self.actions, cur_actions], axis=0)
+
             self.i += cur_actions.shape[0]
+        
+        if self.actions is None:
+            return None
+        if i < 0 or i >= self.actions.shape[0]:
+            return None
         return self.actions[i]
 
+    def reset(self):
+        self.iter = iter(self.data_loader)
+        self.i = 0
+        self.actions = None
+        self.debug_actions = None
 
 class PolicyRollout(Rollout):
-    def __init__(self, arm, policy_path, query_frequency, cartesian, extrinsics_key):
+    def __init__(self, arm, policy_path, query_frequency, cartesian, extrinsics_key, resampled_action_len=None):
         super().__init__()
         self.arm = arm
         self.policy_path = policy_path
@@ -150,7 +191,27 @@ class PolicyRollout(Rollout):
         self.extrinsics = CameraTransforms(intrinsics_key="base", extrinsics_key=extrinsics_key).extrinsics
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.debug_actions = None
+        self.resampled_action_len = resampled_action_len
+        
+    def _downsample_chunk(self, chunk: np.ndarray, target_len: int) -> np.ndarray:
+        if target_len is None or target_len <= 0 or chunk.shape[0] == target_len:
+            return chunk.astype(np.float32, copy=False)
 
+        # chunk: (T, D) -> (1, T, D) and back
+        if self.cartesian:
+            if self.arm == "both":
+                left = chunk[:, :7]
+                right = chunk[:, 7:14]
+                left_r = interpolate_arr_euler(left[None, ...], target_len)[0]
+                right_r = interpolate_arr_euler(right[None, ...], target_len)[0]
+                out = np.hstack([left_r, right_r])
+            else:
+                out = interpolate_arr_euler(chunk[None, ...], target_len)[0]
+        else:
+            out = interpolate_arr(chunk[None, ...], target_len)[0]
+
+        return out.astype(np.float32, copy=False)
+    
     def rollout_step(self, i, obs):
         if i % self.query_frequency == 0:
             start_infer_t = time.time()
@@ -161,13 +222,32 @@ class PolicyRollout(Rollout):
             self.actions = actions.detach().cpu().numpy().squeeze()
             self.debug_actions = self.actions.copy()
             if self.cartesian:
-                transformed_6dof = cam_frame_to_base_frame(self.actions[:, :6].copy(), self.extrinsics[self.arm])
-                # Preserve gripper if present (7th value)
-                if self.actions.shape[1] == 7:
-                    self.actions = np.hstack([transformed_6dof, self.actions[:, 6:7]])
+                if self.arm == "both":
+                    left_actions = self.actions[:, :7]
+                    right_actions = self.actions[:, 7:]
+                    transformed_left = cam_frame_to_base_frame(left_actions[:, :6].copy(), self.extrinsics["left"])
+                    transformed_right = cam_frame_to_base_frame(right_actions[:, :6].copy(), self.extrinsics["right"])
+                    if left_actions.shape[1] == 7:
+                        left_actions = np.hstack([transformed_left, left_actions[:, 6:7]])
+                    else:
+                        left_actions = transformed_left
+                    if right_actions.shape[1] == 7:
+                        right_actions = np.hstack([transformed_right, right_actions[:, 6:7]])
+                    else:
+                        right_actions = transformed_right
+                    self.actions = np.hstack([left_actions, right_actions])
                 else:
-                    self.actions = transformed_6dof
-
+                    transformed_6dof = cam_frame_to_base_frame(self.actions[:, :6].copy(), self.extrinsics[self.arm])
+                    # Preserve gripper if present (7th value)
+                    if self.actions.shape[1] == 7:
+                        self.actions = np.hstack([transformed_6dof, self.actions[:, 6:7]])
+                    else:
+                        self.actions = transformed_6dof
+                        
+            if self.resampled_action_len is not None:
+                self.actions = self._downsample_chunk(self.actions, self.resampled_action_len)
+                self.debug_actions = self.actions.copy()
+                
             print(f"Inference time: {(time.time() - start_infer_t)}s")
 
         # TODO check gripper if we are using 0 to 0.08 or 0 to 1
@@ -277,8 +357,9 @@ def main(
     policy_path=None,
     dataset_path=None,
     repo_id=None,
-    episodes=[1],
+    episodes=[0],
     debug=False,
+    resampled_action_len=None,
 ):
     if arms == "both":
         arms_list = ["right", "left"]
@@ -307,6 +388,7 @@ def main(
             query_frequency=query_frequency,
             cartesian=cartesian,
             extrinsics_key="x5Dec13_2",
+            resampled_action_len=resampled_action_len
         )
     elif dataset_path is not None:
         rollout_type = "replay"
@@ -445,6 +527,14 @@ if __name__ == "__main__":
         action="store_true",
         help="control in cartesian space instead of joint space",
     )
+    
+    parser.add_argument(
+        "--resampled-action-len",
+        type=int,
+        default=None,
+        help="Resample each predicted action chunk to this length (e.g., 100 -> 45). Euler if --cartesian.",
+    )
+    
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -452,7 +542,9 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    episodes = args.episodes if args.episodes is not None else [0]
 
+    print(f"Resampling actions to {args.resampled_action_len}")
     main(
         arms=args.arms,
         frequency=args.frequency,
@@ -460,7 +552,8 @@ if __name__ == "__main__":
         policy_path=args.policy_path,
         dataset_path=args.dataset_path,
         repo_id=args.repo_id,
-        episodes=args.episodes,
+        episodes=episodes,
         cartesian=args.cartesian,
         debug=args.debug,
+        resampled_action_len=args.resampled_action_len
     )
