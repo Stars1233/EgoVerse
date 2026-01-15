@@ -17,7 +17,7 @@ robomimic_model:
     num_heads: 8
     token_postprocessing: "action_token"
     observation_horizon: 1
-    action_horizon: 8
+    action_horizon: 64
     no_trunk: false
     use_domain_embedding: true
     drop_path: 0.1
