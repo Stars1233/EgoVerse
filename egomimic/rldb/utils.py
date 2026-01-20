@@ -751,7 +751,7 @@ class S3RLDBDataset(MultiRLDBDataset):
         try:
             batch_path.write_text("\n".join(lines) + "\n")
 
-            cmd = ["s5cmd", "--log", "error", "run", str(batch_path)]
+            cmd = ["s5cmd", "run", str(batch_path)]
             logger.info("Running s5cmd batch (%d lines): %s", len(lines), " ".join(cmd))
             subprocess.run(cmd, check=True)
 
