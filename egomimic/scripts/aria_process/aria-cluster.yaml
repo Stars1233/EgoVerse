@@ -42,10 +42,10 @@ available_node_types:
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs: { VolumeSize: 50 }
-    resources: { CPU: 8 , aria_small: 1}
+    resources: { CPU: 8, aria_small: 1 }
     min_workers: 0
     max_workers: 50
-  
+
   worker_big:
     node_config:
       InstanceType: r6a.8xlarge
@@ -57,7 +57,7 @@ available_node_types:
         Arn: arn:aws:iam::654654140494:instance-profile/ray-mps-profile
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
-          Ebs: { VolumeSize: 100 }  # often worth bumping
+          Ebs: { VolumeSize: 100 } # often worth bumping
     resources: { CPU: 32, aria_big: 1 }
     min_workers: 0
     max_workers: 10
@@ -78,55 +78,54 @@ initialization_commands:
   - sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq ffmpeg libavcodec-dev libavformat-dev libswscale-dev libx264-dev
   - pip3 install --no-cache-dir --upgrade opencv-python-headless
   - |
-      echo "=== Testing FFmpeg installation ==="
-      if command -v ffmpeg >/dev/null 2>&1; then
-        ffmpeg -hide_banner -version | head -n 1
-        echo "[OK] FFmpeg is installed and accessible."
-      else
-        echo "[FAIL] FFmpeg not found in PATH."
-      fi
-      echo "=== FFmpeg test done ==="
+    echo "=== Testing FFmpeg installation ==="
+    if command -v ffmpeg >/dev/null 2>&1; then
+      ffmpeg -hide_banner -version | head -n 1
+      echo "[OK] FFmpeg is installed and accessible."
+    else
+      echo "[FAIL] FFmpeg not found in PATH."
+    fi
+    echo "=== FFmpeg test done ==="
   - pip3 install --user --no-input --force-reinstall "click==8.2.1"
-
 
 setup_commands:
   - sudo mkdir -p /mnt/raw /mnt/processed
 
   - |
-      if mountpoint -q /mnt/raw; then
-        echo "/mnt/raw already mounted"
-      else
-        sudo s3fs rldb:/raw_v2/aria /mnt/raw \
-          -o ro \
-          -o url=https://s3.us-east-2.amazonaws.com \
-          -o iam_role=auto \
-          -o allow_other \
-          -o umask=000 \
-          -o nonempty
-      fi
+    if mountpoint -q /mnt/raw; then
+      echo "/mnt/raw already mounted"
+    else
+      sudo s3fs rldb:/raw_v2/aria /mnt/raw \
+        -o ro \
+        -o url=https://s3.us-east-2.amazonaws.com \
+        -o iam_role=auto \
+        -o allow_other \
+        -o umask=000 \
+        -o nonempty
+    fi
 
   - |
-      if mountpoint -q /mnt/processed; then
-        echo "/mnt/processed already mounted"
-      else
-        sudo s3fs rldb:/processed_v2/aria /mnt/processed \
-          -o url=https://s3.us-east-2.amazonaws.com \
-          -o iam_role=auto \
-          -o allow_other \
-          -o umask=000 \
-          -o use_path_request_style \
-          -o multipart_size=64 \
-          -o parallel_count=20 \
-          -o del_cache \
-          -o complement_stat \
-          -o nonempty
-      fi
+    if mountpoint -q /mnt/processed; then
+      echo "/mnt/processed already mounted"
+    else
+      sudo s3fs rldb:/processed_v2/aria /mnt/processed \
+        -o url=https://s3.us-east-2.amazonaws.com \
+        -o iam_role=auto \
+        -o allow_other \
+        -o umask=000 \
+        -o use_path_request_style \
+        -o multipart_size=64 \
+        -o parallel_count=20 \
+        -o del_cache \
+        -o complement_stat \
+        -o nonempty
+    fi
 
   - |
-      cd ~/EgoVerse || true
-      gt checkout main || true
-      gt sync || true
-      gt submodule update --init --recursive --quiet || true
+    cd ~/EgoVerse || true
+    gt checkout main || true
+    gt sync || true
+    gt submodule update --init --recursive --quiet || true
 
 head_setup_commands:
   - |
@@ -141,6 +140,5 @@ head_setup_commands:
      | crontab - || true
 
   - crontab -l || true
-
 # Ray startup commands - configure GCS to detect dead/stale nodes faster
 # ray start --head --dashboard-host=0.0.0.0 --dashboard-port=8265 --include-dashboard=true

@@ -22,11 +22,14 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Any, Dict, Iterator, Tuple
 from tqdm import tqdm
 
 import ray
 from ray.exceptions import OutOfMemoryError, RayTaskError, WorkerCrashedError
+
+from egomimic.utils.aws.aws_data_utils import s3_sync_to_local, upload_dir_to_s3
+import boto3
 
 import traceback
 
@@ -45,13 +48,20 @@ from egomimic.utils.aws.aws_sql import (
 
 # --- Paths -------------------------------------------------------------------
 RAW_ROOT = Path("/mnt/raw")
-PROCESSED_ROOT = Path("/mnt/processed")
+PROCESSED_ROOT = Path("/home/ubuntu/processed")
 PROCESSED_LOCAL_ROOT = Path(
-    os.environ.get("PROCESSED_LOCAL_ROOT", "/mnt/processed")
+    os.environ.get("PROCESSED_LOCAL_ROOT", "/home/ubuntu/processed")
 ).resolve()
 PROCESSED_REMOTE_PREFIX = os.environ.get(
-    "PROCESSED_REMOTE_PREFIX", "s3://rldb/processed_v2/aria"
-).rstrip("/")
+    "PROCESSED_REMOTE_PREFIX", "s3://rldb/processed_v2/test_aria"
+).rstrip(
+    "/"
+)  # TODO switch back to aria instead of test_aria
+BUCKET = os.environ.get("BUCKET", "rldb")
+DATA_KEY = os.environ.get(
+    "DATA_KEY", "raw_v2/test_aria"
+)  # TODO switch back to aria instead of test_aria
+
 LOG_ROOT = Path(
     os.environ.get(
         "ARIA_CONVERSION_LOG_ROOT",
@@ -89,6 +99,22 @@ def _map_processed_local_to_remote(p: str | Path) -> str:
     )
 
 
+def _parse_s3_uri(uri: str, *, default_bucket: str | None = None) -> tuple[str, str]:
+    """
+    Parse s3 URI or key prefix.
+      - "s3://bucket/prefix" -> ("bucket", "prefix")
+      - "prefix" -> (default_bucket, "prefix")
+    """
+    uri = (uri or "").strip()
+    if uri.startswith("s3://"):
+        rest = uri[len("s3://") :]
+        bucket, _, key_prefix = rest.partition("/")
+        return bucket, key_prefix.strip("/")
+    if default_bucket is None:
+        raise ValueError(f"Expected s3://... but got '{uri}' and no default_bucket provided")
+    return default_bucket, uri.strip("/")
+
+
 def iter_vrs_bundles(root: Path) -> Iterator[Tuple[Path, Path, Path]]:
     """
     Yield (vrs_file, json_file, mps_dir) for every valid bundle in `root`.
@@ -105,7 +131,11 @@ def iter_vrs_bundles(root: Path) -> Iterator[Tuple[Path, Path, Path]]:
         mpsdir = root / f"mps_{name}_vrs"
 
         # Require all four to exist
-        if mpsdir.is_dir() and (mpsdir / "hand_tracking").is_dir() and (mpsdir / "slam").is_dir():
+        if (
+            mpsdir.is_dir()
+            and (mpsdir / "hand_tracking").is_dir()
+            and (mpsdir / "slam").is_dir()
+        ):
             yield vrs, jsonf, mpsdir
 
 
@@ -129,12 +159,18 @@ def _load_episode_hash(episode_hash: Path) -> str | None:
         "%Y-%m-%d-%H-%M-%S-%f"
     )
 
+
 def _is_oom_exception(e: Exception) -> bool:
     if isinstance(e, OutOfMemoryError):
         return True
     if isinstance(e, (RayTaskError, WorkerCrashedError)):
         s = str(e).lower()
-        return ("outofmemory" in s) or ("out of memory" in s) or ("oom" in s) or ("killed" in s)
+        return (
+            ("outofmemory" in s)
+            or ("out of memory" in s)
+            or ("oom" in s)
+            or ("killed" in s)
+        )
     s = str(e).lower()
     return ("outofmemory" in s) or ("out of memory" in s) or ("oom" in s)
 
@@ -156,12 +192,14 @@ class _Tee:
     def isatty(self) -> bool:
         return False
 
+
 # --- Ray task ----------------------------------------------------------------
 def convert_one_bundle_impl(
     vrs: str,
     jsonf: str,
     mps_dir: str,
     out_dir: str,
+    s3_processed_dir: str,
     dataset_name: str,
     arm: str,
     description: str,
@@ -173,6 +211,7 @@ def convert_one_bundle_impl(
       • mp4_path: per-episode MP4 ('' if not created)
       • total_frames: -1 if unknown/failure
     """
+    s3 = boto3.client("s3")
     stem = Path(vrs).stem
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     log_path = LOG_ROOT / f"{stem}-{uuid.uuid4().hex[:8]}.log"
@@ -197,10 +236,24 @@ def convert_one_bundle_impl(
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                     return "", "", -1
                 link = tmp_dir / t.name
+                rel = t.relative_to(RAW_ROOT)
+                t_key = f"{DATA_KEY.rstrip('/')}/{rel.as_posix()}"
+
                 try:
-                    os.symlink(t, link, target_is_directory=t.is_dir())
-                except FileExistsError:
-                    pass
+                    if t.is_dir():
+                        s3_sync_to_local(BUCKET, t_key, str(link))
+                    else:
+                        s3.download_file(BUCKET, t_key, str(link))
+                except Exception as e:
+                    print(f"[ERR] aws copy failed for {t}: {e}", flush=True)
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    return "", "", -1
+                print()
+            # TODO remove this
+            # List the contents of the temporary directory to show the download was successful
+            print(f"[INFO] Listing {tmp_dir} contents after S3 download:", flush=True)
+            for item in tmp_dir.iterdir():
+                print(f"  {item}", flush=True)
 
             ds_parent = Path(out_dir)
             ds_parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +284,25 @@ def convert_one_bundle_impl(
                 else:
                     matches = list(ds_path.glob(f"*{stem}*_video.mp4"))
                     mp4_str = str(matches[0]) if matches else ""
-
+                
+                try:
+                    out_bucket, out_prefix = _parse_s3_uri(s3_processed_dir, default_bucket=BUCKET)
+                    ds_rel = ds_path.resolve().relative_to(PROCESSED_LOCAL_ROOT).as_posix()
+                    ds_s3_prefix = f"{out_prefix.rstrip('/')}/{ds_rel}".strip("/")
+                    upload_dir_to_s3(str(ds_path), out_bucket, prefix=ds_s3_prefix)
+                    if mp4_str:
+                        mp4_path = Path(mp4_str)
+                        if mp4_path.exists():
+                            mp4_rel = mp4_path.resolve().relative_to(PROCESSED_LOCAL_ROOT).as_posix()
+                            mp4_s3_key = f"{out_prefix.rstrip('/')}/{mp4_rel}".strip("/")
+                            try:
+                                s3.upload_file(str(mp4_path), out_bucket, mp4_s3_key)
+                            except Exception as e:
+                                print(f"[ERR] Failed to upload mp4 {mp4_path} to S3: {e}", flush=True)
+                except Exception as e:
+                    print(f"[ERR] Failed to upload {ds_path} to S3: {e}", flush=True)
+                #TODO delete local directory
+                    
                 return str(ds_path), mp4_str, frames
 
             except Exception as e:
@@ -239,7 +310,10 @@ def convert_one_bundle_impl(
                 print(err_msg, flush=True)
                 return str(ds_path), "", -1
             finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                # shutil.rmtree(tmp_dir, ignore_errors=True)
+                #TODO delete local directory
+                pass
+
 
 @ray.remote(num_cpus=8, resources={"aria_small": 1})
 def convert_one_bundle_small(*args, **kwargs):
@@ -250,8 +324,13 @@ def convert_one_bundle_small(*args, **kwargs):
 def convert_one_bundle_big(*args, **kwargs):
     return convert_one_bundle_impl(*args, **kwargs)
 
+
 # --- Driver ------------------------------------------------------------------
-def launch(dry: bool = False, skip_if_done: bool = False):
+def launch(
+    dry: bool = False,
+    skip_if_done: bool = False,
+    episode_hashes: list[str] | None = None,
+):
     engine = create_default_engine()
     pending: Dict[ray.ObjectRef, Dict[str, Any]] = {}
 
@@ -267,6 +346,13 @@ def launch(dry: bool = False, skip_if_done: bool = False):
             print(f"[SKIP] {name}: could not parse episode_hash from stem", flush=True)
             continue
 
+        if episode_hashes is not None and episode_key not in episode_hashes:
+            print(
+                f"[SKIP] {name}: episode_key '{episode_key}' not in provided episode_hashes list",
+                flush=True,
+            )
+            continue
+
         row = episode_hash_to_table_row(engine, episode_key)
         if row is None:
             print(f"[SKIP] {name}: no matching row in SQL (app.episodes)", flush=True)
@@ -274,29 +360,35 @@ def launch(dry: bool = False, skip_if_done: bool = False):
 
         processed_path = (row.processed_path or "").strip()
         if skip_if_done and len(processed_path) > 0:
-            print(f"[SKIP] {name}: already has processed_path='{processed_path}'", flush=True)
+            print(
+                f"[SKIP] {name}: already has processed_path='{processed_path}'",
+                flush=True,
+            )
             continue
-        
+
         if row.processing_error != "":
-            print("f[INFO] skipping {name} due to prior processing error: {row.processing_error}", flush=True)
+            print(
+                f"[INFO] skipping episode hash: {row.episode_hash} due to processing error",
+                flush=True,
+            )
             continue
 
         if row.is_deleted:
             print(f"[SKIP] {name}: episode marked as deleted in SQL", flush=True)
             continue
-        
+
         print(f"[INFO] processing {name}: episode_key={episode_key}", flush=True)
 
         arm = infer_arm_from_row(row)
         dataset_name = episode_key
         out_dir = PROCESSED_ROOT
+        s3out_dir = PROCESSED_REMOTE_PREFIX
         description = row.task_description or ""
 
         if dry:
             ds_path = (PROCESSED_ROOT / dataset_name).resolve()
             stem = vrs.stem
             mp4_candidate = PROCESSED_ROOT / f"{stem}_video.mp4"
-
 
             mapped_ds = _map_processed_local_to_remote(ds_path)
             mapped_mp4 = _map_processed_local_to_remote(mp4_candidate)
@@ -316,6 +408,7 @@ def launch(dry: bool = False, skip_if_done: bool = False):
             str(jsonf),
             str(mps),
             str(out_dir),
+            str(s3out_dir),
             dataset_name,
             arm,
             description,
@@ -346,11 +439,16 @@ def launch(dry: bool = False, skip_if_done: bool = False):
 
         row = episode_hash_to_table_row(engine, episode_key)
         if row is None:
-            print(f"[WARN] Episode {episode_key}: row disappeared before update?", flush=True)
+            print(
+                f"[WARN] Episode {episode_key}: row disappeared before update?",
+                flush=True,
+            )
             continue
 
         try:
-            ds_path, mp4_path, frames = ray.get(ref)  # can throw (OOM, index error, etc.)
+            ds_path, mp4_path, frames = ray.get(
+                ref
+            )  # can throw (OOM, index error, etc.)
 
             row.num_frames = int(frames) if frames is not None else -1
             if row.num_frames > 0:
@@ -407,7 +505,7 @@ def launch(dry: bool = False, skip_if_done: bool = False):
             row.num_frames = -1
             row.processed_path = ""
             row.mp4_path = ""
-            row.processing_error = f"{type(e).__name__}: {e}"
+            # row.processing_error = f"{type(e).__name__}: {e}" #TODO undo this
             try:
                 update_episode(engine, row)
                 print(
@@ -437,9 +535,13 @@ def launch(dry: bool = False, skip_if_done: bool = False):
                     writer.writeheader()
                 for bench_row in benchmark_rows:
                     writer.writerow(bench_row)
-            print(f"[BENCH] wrote {len(benchmark_rows)} entries → {timing_file.resolve()}", flush=True)
+            print(
+                f"[BENCH] wrote {len(benchmark_rows)} entries → {timing_file.resolve()}",
+                flush=True,
+            )
         except Exception as e:
             print(f"[ERR] Failed to write benchmark CSV {timing_file}: {e}", flush=True)
+
 
 # --- CLI ---------------------------------------------------------------------
 def main():
@@ -453,10 +555,34 @@ def main():
     p.add_argument(
         "--ray-address", default="auto", help="Ray cluster address (default: auto)"
     )
+    p.add_argument(
+        "--episode-hash",
+        action="append",
+        dest="episode_hashes",
+        help="Episode hash to process. Can be specified multiple times to process multiple episodes.",
+    )
+    p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
-    ray.init(address=args.ray_address)
-    launch(dry=args.dry_run, skip_if_done=args.skip_if_done)
+    if args.debug:
+        runtime_env = {"working_dir": "/home/ubuntu/EgoVerse", "excludes": [
+      "**/.git/**",
+      "external/openpi/third_party/aloha/**",
+      "**/*.stl",
+      "**/*.pack",
+      "**/__pycache__/**",
+      "egomimic/robot/**",
+      "external/openpi/**"
+    ],}
+    else:
+        runtime_env = None
+
+    ray.init(address=args.ray_address, runtime_env=runtime_env)
+    launch(
+        dry=args.dry_run,
+        skip_if_done=args.skip_if_done,
+        episode_hashes=args.episode_hashes,
+    )
 
 
 if __name__ == "__main__":
