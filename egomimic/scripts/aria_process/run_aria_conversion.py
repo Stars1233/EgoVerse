@@ -2,7 +2,7 @@
 """
 run_aria_conversion_sql.py – SQL-backed driver (no CSV/S3)
 
-• Walks /mnt/raw for bundles: {name}.vrs, {name}.json , mps_{name}_vrs/
+• Walks S3 for bundles: {name}.vrs, {name}.json , mps_{name}_vrs/
 • name == episode_hash (TEXT in DB) – row must already exist in app.episodes; otherwise skipped
 • Uses Ray to run conversions with absolute symlinks in per-job tmp dirs
 • On success, updates app.episodes.processed_path and num_frames
@@ -29,7 +29,9 @@ import ray
 from ray.exceptions import OutOfMemoryError, RayTaskError, WorkerCrashedError
 
 from egomimic.utils.aws.aws_data_utils import s3_sync_to_local, upload_dir_to_s3
+
 import boto3
+from cloudpathlib import S3Path
 
 import traceback
 
@@ -47,7 +49,7 @@ from egomimic.utils.aws.aws_sql import (
 )
 
 # --- Paths -------------------------------------------------------------------
-RAW_ROOT = Path("/mnt/raw")
+RAW_REMOTE_PREFIX = os.environ.get("RAW_REMOTE_PREFIX", "s3://rldb/raw_v2/test_aria").rstrip("/")
 PROCESSED_ROOT = Path("/home/ubuntu/processed")
 PROCESSED_LOCAL_ROOT = Path(
     os.environ.get("PROCESSED_LOCAL_ROOT", "/home/ubuntu/processed")
@@ -115,28 +117,32 @@ def _parse_s3_uri(uri: str, *, default_bucket: str | None = None) -> tuple[str, 
     return default_bucket, uri.strip("/")
 
 
-def iter_vrs_bundles(root: Path) -> Iterator[Tuple[Path, Path, Path]]:
+def iter_vrs_bundles(root_s3: str) -> Iterator[Tuple[Path, Path, Path]]:
     """
-    Yield (vrs_file, json_file, mps_dir) for every valid bundle in `root`.
+    root_s3: like "s3://rldb/raw_v2/test_aria/"
 
-    Accept bundles containing:
-      • {name}.vrs
-      • {name}.json
-      • mps_{name}_vrs/
-    All must be in the SAME directory.
+    Returns pathlib.Path objects (string-wrapped S3 URIs) so existing code that
+    expects Path keeps working. NOTE: these Paths are NOT local filesystem paths.
     """
-    for vrs in sorted(root.glob("*.vrs")):
+    root = S3Path(root_s3)
+
+    for vrs in sorted(root.glob("*.vrs"), key=lambda p: p.name):
         name = vrs.stem
         jsonf = root / f"{name}.json"
         mpsdir = root / f"mps_{name}_vrs"
 
-        # Require all four to exist
+        if not jsonf.exists():
+            continue
+
         if (
-            mpsdir.is_dir()
-            and (mpsdir / "hand_tracking").is_dir()
-            and (mpsdir / "slam").is_dir()
+        mpsdir.exists()
+        and mpsdir.is_dir()
+        and (mpsdir / "hand_tracking").exists()
+        and (mpsdir / "hand_tracking").is_dir()
+        and (mpsdir / "slam").exists()
+        and (mpsdir / "slam").is_dir()
         ):
-            yield vrs, jsonf, mpsdir
+            yield Path(str(vrs)), Path(str(jsonf)), Path(str(mpsdir))
 
 
 def infer_arm_from_row(row: TableRow) -> str:

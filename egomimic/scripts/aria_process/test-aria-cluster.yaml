@@ -73,6 +73,7 @@ initialization_commands:
   - sudo pip3 install --no-input -U "ray[default]"
   - sudo pip3 install --no-input sqlalchemy
   - sudo pip3 install --no-input -U ray boto3
+  - sudo pip3 install --no-input -U "cloudpathlib[s3]"
   - sudo pip3 install --no-input --force-reinstall "psycopg[binary]"
   - pip3 install -U projectaria-tools
   - sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq ffmpeg libavcodec-dev libavformat-dev libswscale-dev libx264-dev
@@ -91,36 +92,6 @@ initialization_commands:
 
 setup_commands:
   - sudo mkdir -p /mnt/raw /mnt/processed
-
-  - |
-      if mountpoint -q /mnt/raw; then
-        echo "/mnt/raw already mounted"
-      else
-        sudo s3fs rldb:/raw_v2/test_aria /mnt/raw \
-          -o ro \
-          -o url=https://s3.us-east-2.amazonaws.com \
-          -o iam_role=auto \
-          -o allow_other \
-          -o umask=000 \
-          -o nonempty
-      fi
-
-  - |
-      if mountpoint -q /mnt/processed; then
-        echo "/mnt/processed already mounted"
-      else
-        sudo s3fs rldb:/processed_v2/test_aria /mnt/processed \
-          -o url=https://s3.us-east-2.amazonaws.com \
-          -o iam_role=auto \
-          -o allow_other \
-          -o umask=000 \
-          -o use_path_request_style \
-          -o multipart_size=64 \
-          -o parallel_count=20 \
-          -o del_cache \
-          -o complement_stat \
-          -o nonempty
-      fi
 
   - |
       cd ~/EgoVerse || true
