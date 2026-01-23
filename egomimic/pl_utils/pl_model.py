@@ -40,6 +40,10 @@ class ModelWrapper(LightningModule):
 
         self.val_image_buffer, self.val_counter = {}, {}
         self.epoch_memory_stats = []  # Store memory stats per epoch
+
+        self.loss_ema = None
+        self.loss_ema_decay = 0.99
+        self.loss_spike_factor = 1.5
         # TODO __init__ should take the config, and init the model here.  Then save_hyperparameters will just save the config rather than the model
 
     def root_dir(self):
@@ -72,26 +76,59 @@ class ModelWrapper(LightningModule):
         info["losses"] = TensorUtils.detach(losses)
         self.step_log_all_train.append(self.model.log_info(info))
 
-        return losses["action_loss"]
+        loss = losses["action_loss"]
+
+        if not torch.isfinite(loss):
+            if self.global_rank == 0:
+                print(
+                    f"[SKIP] Non-finite loss at batch {batch_idx}: {loss.item()}",
+                    flush=True,
+                )
+            return None
+
+        loss_val = loss.detach()
+
+        if self.loss_ema is None:
+            self.loss_ema = loss_val
+        else:
+            self.loss_ema = (
+                self.loss_ema_decay * self.loss_ema
+                + (1.0 - self.loss_ema_decay) * loss_val
+            )
+
+        if loss_val > self.loss_spike_factor * self.loss_ema:
+            if self.global_rank == 0:
+                print(
+                    f"[SKIP] Loss spike at batch {batch_idx}: "
+                    f"{loss_val.item():.4f} (EMA {self.loss_ema.item():.4f})",
+                    flush=True,
+                )
+        return loss
 
     def on_validation_start(self):
         self.model.device = self.device
-        
-        if self.trainer.is_global_zero:
-            os.makedirs(os.path.join(self.video_dir(), f"epoch_{self.trainer.current_epoch}"),exist_ok=True)
 
+        if self.trainer.is_global_zero:
+            os.makedirs(
+                os.path.join(self.video_dir(), f"epoch_{self.trainer.current_epoch}"),
+                exist_ok=True,
+            )
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         """
         Run a validation step on the batch, and save that batch of images into the val_image_buffer.  Once the buffer hits 1000 images, save that as a 30fps video using torchvision.io.write_video.
         """
-        print(f"[VAL_STEP] rank={self.global_rank}, batch_idx={batch_idx}",flush=True)
+        print(f"[VAL_STEP] rank={self.global_rank}, batch_idx={batch_idx}", flush=True)
 
         batch = self.model.process_batch_for_training(batch)
         metrics, images_dict = self.model.forward_eval_logging(batch)
 
         metrics = {
-            k: (v.to(self.device) if torch.is_tensor(v) else torch.tensor(v, device=self.device))
+            k: (
+                v.to(self.device)
+                if torch.is_tensor(v)
+                else torch.tensor(v, device=self.device)
+            )
             for k, v in metrics.items()
         }
 
@@ -124,7 +161,7 @@ class ModelWrapper(LightningModule):
         self.log_dict(metrics, sync_dist=True)
 
     def on_validation_end(self):
-        print(f"[ON_VALIDATION_END] rank={self.global_rank}",flush=True)
+        print(f"[ON_VALIDATION_END] rank={self.global_rank}", flush=True)
         for key, buffer in self.val_image_buffer.items():
             os.makedirs(
                 os.path.join(
@@ -171,7 +208,6 @@ class ModelWrapper(LightningModule):
             }
         return {"optimizer": optimizer}
 
-    
     def on_fit_start(self):
         self.model.device = self.device
 
