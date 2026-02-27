@@ -174,6 +174,8 @@ def run_task(
     aws_secret: str = "",
     do_register_sql: bool = False,
     delete_local: bool = False,
+    max_interp_gap: int = 15,
+    max_interp_velocity: float = 2.0,
 ) -> dict[str, Any]:
     """Run the full pipeline for one task: convert -> upload -> register -> cleanup."""
     t0 = time.perf_counter()
@@ -185,6 +187,8 @@ def run_task(
         robot_type=robot_type,
         fps=fps,
         img_workers=img_workers,
+        max_interp_gap=max_interp_gap,
+        max_interp_velocity=max_interp_velocity,
     )
 
     episodes = result["episodes"]
@@ -324,6 +328,16 @@ def main() -> int:
         help="Register episodes in SQL database",
     )
 
+    interp_group = parser.add_argument_group("Interpolation")
+    interp_group.add_argument(
+        "--max-interp-gap", type=int, default=15,
+        help="Max gap length (frames) to interpolate (default: 15 = 0.5s@30fps)",
+    )
+    interp_group.add_argument(
+        "--max-interp-velocity", type=float, default=2.0,
+        help="Max per-frame displacement (m) for interpolation sanity check (default: 2.0)",
+    )
+
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -356,11 +370,14 @@ def main() -> int:
     # SQL idempotency check: filter out already-processed tasks
     # ------------------------------------------------------------------
     if args.register_sql:
+        print(f"Checking SQL for {len(task_entries)} tasks...")
         _get_sql_engine()
         original_count = len(task_entries)
         filtered: list[tuple[str, bool]] = []
         skipped = 0
-        for task_id, is_flagship in task_entries:
+        for idx, (task_id, is_flagship) in enumerate(task_entries):
+            if (idx + 1) % 100 == 0 or idx == 0:
+                print(f"  SQL check {idx + 1}/{original_count}...")
             existing = is_task_already_processed(task_id)
             if existing:
                 skipped += 1
@@ -368,8 +385,9 @@ def main() -> int:
             else:
                 filtered.append((task_id, is_flagship))
         task_entries = filtered
+        print(f"SQL check done: {skipped} skipped, {len(task_entries)} to process")
         if skipped:
-            print(f"\nSkipped {skipped}/{original_count} already-processed tasks\n")
+            print(f"Skipped {skipped}/{original_count} already-processed tasks")
 
     if not task_entries:
         print("All tasks already processed.")
@@ -417,6 +435,8 @@ def main() -> int:
                 aws_secret=aws_secret,
                 do_register_sql=args.register_sql,
                 delete_local=args.delete_local,
+                max_interp_gap=args.max_interp_gap,
+                max_interp_velocity=args.max_interp_velocity,
             )
             log_task_result(
                 args.progress_file,

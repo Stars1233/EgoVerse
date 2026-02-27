@@ -12,11 +12,16 @@ Output keys per episode:
     obs_head_pose                    (T, 7)         xyz + quat(w, x, y, z)
     images.front_1                   (T, H, W, 3)   JPEG-compressed by ZarrWriter
 
-Filtering:
-  Frames are dropped when:
-    - Either hand has missing keypoint predictions
-    - Frame falls within a Hand Tracking Error annotation range
-    - Frame falls within an Inactive Time collector issue range
+Processing pipeline:
+  1. Nullify: Hand Tracking Error frames have their affected-hand keypoints
+     set to None, turning them into gaps.
+  2. Interpolation: Short gaps (configurable, default <=15 frames / 0.5s)
+     in hand keypoints are filled via Akima spline interpolation with
+     velocity-clamped sanity checking.
+  3. Filtering / zero-fill:
+     - Tracking-error frames still missing after interpolation → dropped
+     - Missing keypoints without tracking error (single-hand) → zero-filled, kept
+     - Inactive Time collector issues → dropped
   Only contiguous runs of valid frames are kept as sub-episodes.
 
 Usage:
@@ -40,6 +45,7 @@ import cv2
 import numpy as np
 import simplejpeg
 from decord import VideoReader, cpu as decord_cpu
+from scipy.interpolate import Akima1DInterpolator
 from scipy.spatial.transform import Rotation as R
 
 from egomimic.rldb.zarr.zarr_writer import ZarrWriter
@@ -163,34 +169,217 @@ def _save_preview_mp4(
 
 
 # ---------------------------------------------------------------------------
+# Hand-keypoint interpolation (Akima spline, gap-length-aware)
+# ---------------------------------------------------------------------------
+
+MAX_INTERP_GAP_FRAMES = 15  # default: only interpolate gaps <= 0.5s @ 30fps
+MAX_INTERP_VELOCITY = 2.0   # m/frame; reject implausible interpolated values
+
+
+def _find_gaps(missing_mask: np.ndarray) -> list[tuple[int, int]]:
+    """Return (start, end) inclusive index pairs for contiguous True runs."""
+    gaps = []
+    start = None
+    for i, m in enumerate(missing_mask):
+        if m:
+            if start is None:
+                start = i
+        else:
+            if start is not None:
+                gaps.append((start, i - 1))
+                start = None
+    if start is not None:
+        gaps.append((start, len(missing_mask) - 1))
+    return gaps
+
+
+def _akima_interpolate_keypoints(
+    keypoints_seq: np.ndarray,
+    valid_mask: np.ndarray,
+    gap_start: int,
+    gap_end: int,
+) -> np.ndarray | None:
+    """Interpolate a (gap_len, K) block of keypoints using Akima splines.
+
+    keypoints_seq: (N, K) array — full sequence of keypoint values
+    valid_mask: (N,) bool — True where data is real
+    gap_start, gap_end: inclusive indices of the gap
+
+    Returns (gap_len, K) interpolated values or None if insufficient context.
+    """
+    gap_len = gap_end - gap_start + 1
+    K = keypoints_seq.shape[1]
+
+    # Need at least 2 valid points on each side of the gap for Akima
+    ctx_lo = max(0, gap_start - 10)
+    ctx_hi = min(len(valid_mask), gap_end + 11)
+
+    before = [i for i in range(ctx_lo, gap_start) if valid_mask[i]]
+    after = [i for i in range(gap_end + 1, ctx_hi) if valid_mask[i]]
+
+    anchor_indices = before + after
+    if len(anchor_indices) < 3:
+        return None
+
+    x_anchor = np.array(anchor_indices, dtype=np.float64)
+    y_anchor = keypoints_seq[anchor_indices]  # (M, K)
+
+    x_gap = np.arange(gap_start, gap_end + 1, dtype=np.float64)
+    result = np.empty((gap_len, K), dtype=np.float32)
+
+    for k in range(K):
+        try:
+            interp = Akima1DInterpolator(x_anchor, y_anchor[:, k])
+            result[:, k] = interp(x_gap)
+        except Exception:
+            return None
+
+    return result
+
+
+def _velocity_check(
+    interpolated: np.ndarray,
+    keypoints_seq: np.ndarray,
+    gap_start: int,
+    gap_end: int,
+    max_vel: float,
+) -> bool:
+    """Check that interpolated keypoints don't imply impossible velocities.
+
+    Compares each frame to its predecessor (including the anchor frame
+    immediately before the gap).  Returns True if all velocities are ok.
+    """
+    prev_idx = gap_start - 1
+    if prev_idx < 0:
+        return True
+    prev_kp = keypoints_seq[prev_idx]  # (K,)
+
+    # Reshape to (N, 21, 3) for per-keypoint velocity
+    n_kp = interpolated.shape[1] // 3
+    for t in range(interpolated.shape[0]):
+        cur = interpolated[t].reshape(n_kp, 3)
+        prv = prev_kp.reshape(n_kp, 3) if t == 0 else interpolated[t - 1].reshape(n_kp, 3)
+        max_displacement = float(np.max(np.linalg.norm(cur - prv, axis=1)))
+        if max_displacement > max_vel:
+            return False
+        prev_kp = interpolated[t]
+    return True
+
+
+def _nullify_tracking_errors(frames: list[FrameData]) -> int:
+    """Null out keypoints on frames with Hand Tracking Error annotations.
+
+    This turns error-flagged frames into gaps so the interpolation logic
+    can fill short ones and the zero-fill path handles long ones.
+    Modifies ``frames`` in place.  Returns count of nullified frames.
+    """
+    nullified = 0
+    for frame in frames:
+        if frame.hand_tracking_error is None:
+            continue
+        hand = frame.hand_tracking_error.get("hand", "Both")
+        if hand in ("Left", "Both") and frame.hand_keypoints.left is not None:
+            frame.hand_keypoints.left = None
+        if hand in ("Right", "Both") and frame.hand_keypoints.right is not None:
+            frame.hand_keypoints.right = None
+        nullified += 1
+    return nullified
+
+
+def interpolate_hand_gaps(
+    frames: list[FrameData],
+    max_gap_frames: int = MAX_INTERP_GAP_FRAMES,
+    max_velocity: float = MAX_INTERP_VELOCITY,
+) -> dict[str, Any]:
+    """Fill short gaps in hand keypoints via Akima spline interpolation.
+
+    Frames with Hand Tracking Error annotations have their bad-hand
+    keypoints nullified first, turning them into gaps eligible for
+    interpolation.  Modifies ``frames`` in place.  Returns stats dict.
+    """
+    n = len(frames)
+    tracking_error_nullified = _nullify_tracking_errors(frames)
+    stats: dict[str, Any] = {
+        "tracking_error_nullified": tracking_error_nullified,
+        "left_gaps_found": 0, "left_gaps_filled": 0, "left_frames_filled": 0,
+        "right_gaps_found": 0, "right_gaps_filled": 0, "right_frames_filled": 0,
+        "velocity_rejected": 0,
+    }
+
+    for hand in ("left", "right"):
+        missing = np.array([
+            getattr(frames[i].hand_keypoints, hand) is None
+            for i in range(n)
+        ])
+        gaps = _find_gaps(missing)
+        stats[f"{hand}_gaps_found"] = len(gaps)
+
+        if not gaps:
+            continue
+
+        # Build dense keypoint array for the hand (N, 63)
+        kp_seq = np.full((n, 63), INVALID_VALUE, dtype=np.float32)
+        valid = np.zeros(n, dtype=bool)
+        for i in range(n):
+            kp = getattr(frames[i].hand_keypoints, hand)
+            if kp is not None:
+                kp_seq[i] = kp.flatten()
+                valid[i] = True
+
+        for gap_start, gap_end in gaps:
+            gap_len = gap_end - gap_start + 1
+            if gap_len > max_gap_frames:
+                continue
+
+            filled = _akima_interpolate_keypoints(kp_seq, valid, gap_start, gap_end)
+            if filled is None:
+                continue
+
+            if not _velocity_check(filled, kp_seq, gap_start, gap_end, max_velocity):
+                stats["velocity_rejected"] += 1
+                continue
+
+            # Write back into frames
+            for offset, idx in enumerate(range(gap_start, gap_end + 1)):
+                kp_21x3 = filled[offset].reshape(21, 3).astype(np.float32)
+                if hand == "left":
+                    frames[idx].hand_keypoints.left = kp_21x3
+                else:
+                    frames[idx].hand_keypoints.right = kp_21x3
+                kp_seq[idx] = filled[offset]
+                valid[idx] = True
+
+            stats[f"{hand}_gaps_filled"] += 1
+            stats[f"{hand}_frames_filled"] += gap_len
+
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Frame validity
 # ---------------------------------------------------------------------------
 
 
 def _build_validity_mask(frames: list[FrameData], video_frame_count: int) -> np.ndarray:
-    """Boolean mask: True = frame has valid hand tracking and no errors."""
+    """Boolean mask: True = frame is usable for training.
+
+    Called AFTER interpolation.  Drop logic:
+      - Inactive Time → always drop
+      - Beyond video length → always drop
+      - Hand Tracking Error with keypoints still missing (long gap that
+        wasn't interpolated) → drop
+      - Missing keypoints WITHOUT tracking error → zero-fill, keep
+        (single-hand tasks)
+    """
     n = len(frames)
     mask = np.ones(n, dtype=bool)
     drop_reasons: dict[str, int] = {
-        "missing_left_hand": 0,
-        "missing_right_hand": 0,
-        "hand_tracking_error": 0,
+        "tracking_error_unfilled": 0,
         "inactive_time": 0,
         "beyond_video": 0,
     }
+    missing_hands_info = {"left_missing": 0, "right_missing": 0, "both_missing": 0}
     for i, frame in enumerate(frames):
-        if frame.hand_keypoints.left is None:
-            mask[i] = False
-            drop_reasons["missing_left_hand"] += 1
-            continue
-        if frame.hand_keypoints.right is None:
-            mask[i] = False
-            drop_reasons["missing_right_hand"] += 1
-            continue
-        if frame.hand_tracking_error is not None:
-            mask[i] = False
-            drop_reasons["hand_tracking_error"] += 1
-            continue
         if (
             frame.collector_issue is not None
             and frame.collector_issue.get("issue_type") == "Inactive Time"
@@ -201,6 +390,31 @@ def _build_validity_mask(frames: list[FrameData], video_frame_count: int) -> np.
         if i >= video_frame_count:
             mask[i] = False
             drop_reasons["beyond_video"] += 1
+            continue
+
+        # Tracking-error frames whose keypoints weren't recovered by
+        # interpolation → drop (the gap was too long to trust).
+        if frame.hand_tracking_error is not None:
+            err_hand = frame.hand_tracking_error.get("hand", "Both")
+            still_bad = False
+            if err_hand in ("Left", "Both") and frame.hand_keypoints.left is None:
+                still_bad = True
+            if err_hand in ("Right", "Both") and frame.hand_keypoints.right is None:
+                still_bad = True
+            if still_bad:
+                mask[i] = False
+                drop_reasons["tracking_error_unfilled"] += 1
+                continue
+
+        # Remaining missing keypoints (no tracking error) → kept, zero-filled
+        l_miss = frame.hand_keypoints.left is None
+        r_miss = frame.hand_keypoints.right is None
+        if l_miss and r_miss:
+            missing_hands_info["both_missing"] += 1
+        elif l_miss:
+            missing_hands_info["left_missing"] += 1
+        elif r_miss:
+            missing_hands_info["right_missing"] += 1
 
     valid_count = int(mask.sum())
     total = len(frames)
@@ -209,6 +423,11 @@ def _build_validity_mask(frames: list[FrameData], video_frame_count: int) -> np.
     for reason, count in drop_reasons.items():
         if count > 0:
             print(f"    {reason}: {count}")
+    zero_filled = sum(missing_hands_info.values())
+    if zero_filled > 0:
+        print(f"  Zero-filled (kept): left={missing_hands_info['left_missing']}, "
+              f"right={missing_hands_info['right_missing']}, "
+              f"both={missing_hands_info['both_missing']}")
     return mask
 
 
@@ -276,6 +495,8 @@ def convert_task_to_zarr(
     robot_type: str = "scale_bimanual",
     fps: int = 30,
     img_workers: int | None = None,
+    max_interp_gap: int = MAX_INTERP_GAP_FRAMES,
+    max_interp_velocity: float = MAX_INTERP_VELOCITY,
 ) -> dict[str, Any]:
     """Convert one Scale task to one or more Zarr episodes.
 
@@ -353,6 +574,24 @@ def convert_task_to_zarr(
     print(f"[{task_id}] Video: {video_frame_count} frames  SFS: {n_frames} frames")
     if video_frame_count != n_frames:
         print(f"[{task_id}] WARNING: video/SFS frame count mismatch")
+
+    # ------------------------------------------------------------------
+    # Interpolate short hand-tracking gaps (before filtering)
+    # ------------------------------------------------------------------
+    if max_interp_gap > 0:
+        interp_stats = interpolate_hand_gaps(
+            frames,
+            max_gap_frames=max_interp_gap,
+            max_velocity=max_interp_velocity,
+        )
+        nullified = interp_stats["tracking_error_nullified"]
+        filled_l = interp_stats["left_frames_filled"]
+        filled_r = interp_stats["right_frames_filled"]
+        rej = interp_stats["velocity_rejected"]
+        print(f"[{task_id}] Interpolation: nullified {nullified} tracking-error frames, "
+              f"filled {filled_l} left + {filled_r} right frames "
+              f"(gaps: {interp_stats['left_gaps_filled']}L/{interp_stats['right_gaps_filled']}R filled, "
+              f"{rej} velocity-rejected)")
 
     # ------------------------------------------------------------------
     # Build per-frame validity mask and find contiguous runs
@@ -524,6 +763,14 @@ def main() -> int:
         "--workers", type=int, default=1,
         help="Parallel task workers (default: 1 = sequential)",
     )
+    parser.add_argument(
+        "--max-interp-gap", type=int, default=MAX_INTERP_GAP_FRAMES,
+        help=f"Max gap length (frames) to interpolate (default: {MAX_INTERP_GAP_FRAMES})",
+    )
+    parser.add_argument(
+        "--max-interp-velocity", type=float, default=MAX_INTERP_VELOCITY,
+        help=f"Max per-frame velocity (m) for interpolation sanity check (default: {MAX_INTERP_VELOCITY})",
+    )
     args = parser.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -547,6 +794,8 @@ def main() -> int:
                     robot_type=args.robot_type,
                     fps=args.fps,
                     img_workers=img_workers,
+                    max_interp_gap=args.max_interp_gap,
+                    max_interp_velocity=args.max_interp_velocity,
                 ): tid
                 for tid in args.task_ids
             }
@@ -569,6 +818,8 @@ def main() -> int:
                     robot_type=args.robot_type,
                     fps=args.fps,
                     img_workers=img_workers,
+                    max_interp_gap=args.max_interp_gap,
+                    max_interp_velocity=args.max_interp_velocity,
                 )
                 total_episodes += result["episodes"]
             except Exception as exc:
