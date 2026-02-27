@@ -65,10 +65,16 @@ def _get_video_frame_count(video_path: str) -> int:
     return len(vr)
 
 
-def _decode_selected_frames(video_path: str, indices: list[int]) -> dict[int, np.ndarray]:
+def _decode_selected_frames(
+    video_path: str,
+    indices: list[int],
+    chunk_size: int = 500,
+    resize: tuple[int, int] | None = IMAGE_SIZE,
+) -> dict[int, np.ndarray]:
     """Batch-decode only the requested frame indices via decord.
 
-    Returns a dict mapping frame index to RGB uint8 ndarray.
+    Decodes in chunks and eagerly resizes to *resize* (W, H) to keep
+    memory usage bounded.  Returns a dict mapping frame index to RGB uint8.
     """
     if not indices:
         return {}
@@ -78,8 +84,17 @@ def _decode_selected_frames(video_path: str, indices: list[int]) -> dict[int, np
     valid = [i for i in indices_sorted if i <= max_idx]
     if not valid:
         return {}
-    batch = vr.get_batch(valid).asnumpy()
-    return {t: batch[i] for i, t in enumerate(valid)}
+    result: dict[int, np.ndarray] = {}
+    for start in range(0, len(valid), chunk_size):
+        chunk_indices = valid[start : start + chunk_size]
+        batch = vr.get_batch(chunk_indices).asnumpy()
+        for i, t in enumerate(chunk_indices):
+            frame = batch[i]
+            if resize is not None:
+                frame = cv2.resize(frame, resize, interpolation=cv2.INTER_LINEAR)
+            result[t] = frame
+        del batch
+    return result
 
 
 def _resize_and_encode(frame: np.ndarray) -> tuple[tuple[int, ...], bytes]:
@@ -139,8 +154,11 @@ def convert_task_to_zarr(
     robot_type: str = "scale_bimanual",
     fps: int = 30,
     img_workers: int | None = None,
-) -> int:
-    """Convert one Scale task to one or more Zarr episodes. Returns count."""
+) -> dict[str, Any]:
+    """Convert one Scale task to one or more Zarr episodes.
+
+    Returns a dict with keys: episodes, folder, task_desc, total_frames, output_dir.
+    """
     t_start = time.perf_counter()
     if img_workers is None:
         img_workers = min(os.cpu_count() or 4, 8)
@@ -252,10 +270,9 @@ def convert_task_to_zarr(
         print(f"[{task_id}] WARNING: video/SFS frame count mismatch")
 
     # ------------------------------------------------------------------
-    # Plan sub-episodes and collect all needed frame indices
+    # Plan sub-episodes (index lists only, no video decode yet)
     # ------------------------------------------------------------------
     sub_episode_plans: list[list[int]] = []
-    all_needed_indices: set[int] = set()
     for ep_start in range(0, len(valid_indices), SUB_EPISODE_LENGTH):
         sub = valid_indices[ep_start : ep_start + SUB_EPISODE_LENGTH]
         if len(sub) < 10:
@@ -264,16 +281,9 @@ def convert_task_to_zarr(
         if len(preliminary_kept) < 10:
             continue
         sub_episode_plans.append(sub)
-        all_needed_indices.update(preliminary_kept)
 
     # ------------------------------------------------------------------
-    # Decode only the needed frames (selective decode)
-    # ------------------------------------------------------------------
-    decoded_frames = _decode_selected_frames(video_path, sorted(all_needed_indices))
-    print(f"[{task_id}] Decoded {len(decoded_frames)}/{len(all_needed_indices)} requested frames")
-
-    # ------------------------------------------------------------------
-    # Write sub-episodes
+    # Write sub-episodes (streaming: decode per sub-episode to bound memory)
     # ------------------------------------------------------------------
     folder = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S-%f")
     task_output_dir = Path(output_dir) / folder
@@ -282,10 +292,13 @@ def convert_task_to_zarr(
     written = 0
 
     for sub in sub_episode_plans:
-        kept = [t for t in sub if t in decoded_frames]
+        sub_indices = sorted(t for t in sub if t < video_frame_count)
+        decoded = _decode_selected_frames(video_path, sub_indices)
+        kept = [t for t in sub if t in decoded]
         none_count = len(sub) - len(kept)
         print(f"[ep{written}] sub={len(sub)}  kept={len(kept)}  dropped(no image)={none_count}  frames=[{sub[0]}..{sub[-1]}]")
         if len(kept) < 10:
+            del decoded
             continue
 
         T = len(kept)
@@ -311,13 +324,15 @@ def convert_task_to_zarr(
             right_kps[kept_arr] >= INVALID_VALUE - 1, 0.0, right_kps[kept_arr]
         ).astype(np.float32)
 
-        # ---- Parallel resize + JPEG encode ----
-        ordered_frames = [decoded_frames[t] for t in kept]
+        ordered_frames = [decoded[t] for t in kept]
+        del decoded
         n_workers = min(img_workers, T)
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            results = list(pool.map(_resize_and_encode, ordered_frames))
-        image_shape = list(results[0][0])
-        pre_encoded = np.array([r[1] for r in results], dtype=object)
+            encode_results = list(pool.map(_resize_and_encode, ordered_frames))
+        del ordered_frames
+        image_shape = list(encode_results[0][0])
+        pre_encoded = np.array([r[1] for r in encode_results], dtype=object)
+        del encode_results
 
         print(f"[ep{written}] T={T}  image_shape={image_shape}  kept={len(kept_arr)}")
 
@@ -345,17 +360,23 @@ def convert_task_to_zarr(
             fps=fps,
             task=task_desc,
             annotations=lang_ann if lang_ann else None,
-            enable_sharding=False,
+            enable_sharding=True,
         )
         written += 1
         print(f"[{task_id}] Wrote episode {written} ({T} frames) -> {episode_path.name}")
 
     if os.path.exists(task_download_path):
-        shutil.rmtree(task_download_path)
+        shutil.rmtree(task_download_path, ignore_errors=True)
 
     elapsed = time.perf_counter() - t_start
     print(f"[{task_id}] Done: {written} episode(s) in {elapsed:.1f}s -> {task_output_dir}")
-    return written
+    return {
+        "episodes": written,
+        "folder": folder,
+        "task_desc": task_desc,
+        "total_frames": n_frames,
+        "output_dir": str(task_output_dir),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +426,7 @@ def main() -> int:
             for future in as_completed(futures):
                 tid = futures[future]
                 try:
-                    total_episodes += future.result()
+                    total_episodes += future.result()["episodes"]
                 except Exception as exc:
                     print(f"[{tid}] ERROR: {exc}")
                     traceback.print_exc()
@@ -414,7 +435,7 @@ def main() -> int:
         for idx, task_id in enumerate(args.task_ids, start=1):
             print(f"\n[{idx}/{len(args.task_ids)}] {task_id}")
             try:
-                n = convert_task_to_zarr(
+                result = convert_task_to_zarr(
                     task_id=task_id,
                     output_dir=args.output_dir,
                     download_dir=args.download_dir,
@@ -422,7 +443,7 @@ def main() -> int:
                     fps=args.fps,
                     img_workers=img_workers,
                 )
-                total_episodes += n
+                total_episodes += result["episodes"]
             except Exception as exc:
                 print(f"[{task_id}] ERROR: {exc}")
                 traceback.print_exc()
