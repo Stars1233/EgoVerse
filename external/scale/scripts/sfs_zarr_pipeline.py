@@ -18,8 +18,9 @@ Usage:
 
 Environment:
     SCALE_API_KEY           Required for downloading tasks from Scale
-    AWS_ACCESS_KEY_ID       S3 credentials (or pass via --aws-access-key-id)
-    AWS_SECRET_ACCESS_KEY   S3 credentials (or pass via --aws-secret-access-key)
+    R2_ACCESS_KEY_ID        Cloudflare R2 access key (from ~/.egoverse_env)
+    R2_SECRET_ACCESS_KEY    Cloudflare R2 secret key
+    R2_ENDPOINT_URL         Cloudflare R2 endpoint URL
 """
 
 from __future__ import annotations
@@ -123,11 +124,13 @@ def upload_to_s3(
     s3_prefix: str,
     aws_access_key_id: str = "",
     aws_secret_access_key: str = "",
+    endpoint_url: str = "",
     delete_after: bool = False,
 ) -> str:
-    """Upload a local directory tree to S3 via `aws s3 sync`.
+    """Upload a local directory tree to S3-compatible storage via `aws s3 sync`.
 
     Returns the full s3:// URI of the uploaded prefix.
+    Supports Cloudflare R2 via endpoint_url.
     """
     local_path = Path(local_dir)
     if not local_path.exists():
@@ -138,13 +141,14 @@ def upload_to_s3(
     if aws_access_key_id and aws_secret_access_key:
         env["AWS_ACCESS_KEY_ID"] = aws_access_key_id
         env["AWS_SECRET_ACCESS_KEY"] = aws_secret_access_key
+    if endpoint_url:
+        env["AWS_DEFAULT_REGION"] = "auto"
 
-    result = subprocess.run(
-        ["aws", "s3", "sync", str(local_path), s3_uri, "--only-show-errors"],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    cmd = ["aws", "s3", "sync", str(local_path), s3_uri, "--only-show-errors"]
+    if endpoint_url:
+        cmd.extend(["--endpoint-url", endpoint_url])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         raise RuntimeError(f"aws s3 sync failed: {result.stderr.strip()}")
 
@@ -172,6 +176,7 @@ def run_task(
     s3_bucket: str = "rldb",
     aws_key: str = "",
     aws_secret: str = "",
+    endpoint_url: str = "",
     do_register_sql: bool = False,
     delete_local: bool = False,
     max_interp_gap: int = 15,
@@ -201,7 +206,7 @@ def run_task(
     category = "flagship" if is_flagship else "freeform"
 
     if upload_s3 and folder:
-        s3_prefix = f"scale/{category}/{folder}"
+        s3_prefix = f"processed_v3/scale/{category}/{folder}"
         print(f"[{task_id}] Uploading to s3://{s3_bucket}/{s3_prefix}/ ...")
         s3_full_path = upload_to_s3(
             local_dir,
@@ -209,6 +214,7 @@ def run_task(
             s3_prefix,
             aws_access_key_id=aws_key,
             aws_secret_access_key=aws_secret,
+            endpoint_url=endpoint_url,
             delete_after=delete_local,
         )
         print(f"[{task_id}] Uploaded -> {s3_full_path}")
@@ -310,15 +316,14 @@ def main() -> int:
         help="Max tasks to process (0 = no limit)",
     )
 
-    s3_group = parser.add_argument_group("S3 upload")
-    s3_group.add_argument("--upload-s3", action="store_true", help="Upload to S3")
+    s3_group = parser.add_argument_group("S3/R2 upload")
+    s3_group.add_argument("--upload-s3", action="store_true", help="Upload to S3/R2")
     s3_group.add_argument("--s3-bucket", default="rldb", help="S3 bucket")
-    s3_group.add_argument("--aws-access-key-id", help="AWS access key")
-    s3_group.add_argument("--aws-secret-access-key", help="AWS secret key")
+    s3_group.add_argument("--endpoint-url", help="S3-compatible endpoint URL (for R2)")
     s3_group.add_argument(
         "--delete-local",
         action="store_true",
-        help="Delete local files after S3 upload",
+        help="Delete local files after upload",
     )
 
     sql_group = parser.add_argument_group("SQL registration")
@@ -356,10 +361,9 @@ def main() -> int:
         print("No tasks to process.")
         return 0
 
-    aws_key = args.aws_access_key_id or os.environ.get("AWS_ACCESS_KEY_ID", "")
-    aws_secret = args.aws_secret_access_key or os.environ.get(
-        "AWS_SECRET_ACCESS_KEY", ""
-    )
+    aws_key = os.environ.get("R2_ACCESS_KEY_ID", os.environ.get("AWS_ACCESS_KEY_ID", ""))
+    aws_secret = os.environ.get("R2_SECRET_ACCESS_KEY", os.environ.get("AWS_SECRET_ACCESS_KEY", ""))
+    endpoint_url = args.endpoint_url or os.environ.get("R2_ENDPOINT_URL", "")
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     Path(args.download_dir).mkdir(parents=True, exist_ok=True)
@@ -406,7 +410,8 @@ def main() -> int:
     print(f"  Img threads/worker: {img_workers}")
     print(f"  Output:    {args.output_dir}/<timestamp>/")
     if args.upload_s3:
-        print(f"  S3:        s3://{args.s3_bucket}/scale/{{flagship,freeform}}/<timestamp>/")
+        dest = "R2" if endpoint_url else "S3"
+        print(f"  {dest}:        s3://{args.s3_bucket}/processed_v3/scale/{{flagship,freeform}}/<timestamp>/")
     if args.register_sql:
         print("  SQL:       enabled (zarr_processed_path)")
     print(f"  Progress:  {args.progress_file}")
@@ -433,6 +438,7 @@ def main() -> int:
                 s3_bucket=args.s3_bucket,
                 aws_key=aws_key,
                 aws_secret=aws_secret,
+                endpoint_url=endpoint_url,
                 do_register_sql=args.register_sql,
                 delete_local=args.delete_local,
                 max_interp_gap=args.max_interp_gap,
