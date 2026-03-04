@@ -252,8 +252,12 @@ class QuaternionPoseToYPR(Transform):
                 f"'{self.pose_key}'"
             )
         xyz = pose[:3]
-        xyzw = wxyz_to_xyzw(pose[3:7])
-        ypr = R.from_quat(xyzw).as_euler("ZYX", degrees=False)
+        quat = (
+            pose[3:7]
+            if np.linalg.norm(pose[3:7]) > 0
+            else np.array([0.0, 0.0, 0.0, 1.0])
+        )
+        ypr = R.from_quat(quat).as_euler("ZYX", degrees=False)
         batch[self.output_key] = np.concatenate([xyz, ypr], axis=0)
         return batch
 
@@ -509,17 +513,6 @@ class ConcatKeys(Transform):
             for k in self.key_list:
                 batch.pop(k, None)
 
-        return batch
-
-
-class Reshape(Transform):
-    def __init__(self, input_key: str, output_key: str, shape: tuple):
-        self.input_key = input_key
-        self.output_key = output_key
-        self.shape = shape
-
-    def transform(self, batch: dict) -> dict:
-        batch[self.output_key] = batch[self.input_key].reshape(*self.shape)
         return batch
 
 

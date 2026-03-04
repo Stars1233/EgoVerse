@@ -36,9 +36,9 @@ valid_datasets:
     mode: total
 train_dataloader_params:
   scale_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 10
 valid_dataloader_params:
   scale_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 10

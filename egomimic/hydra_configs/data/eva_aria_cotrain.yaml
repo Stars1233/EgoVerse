@@ -65,15 +65,15 @@ valid_datasets:
     mode: total
 train_dataloader_params:
   eva_bimanual:
-    batch_size: 32
+    batch_size: 1
     num_workers: 10
   aria_bimanual:
-    batch_size: 32
+    batch_size: 1
     num_workers: 10
 valid_dataloader_params:
   eva_bimanual:
-    batch_size: 32
+    batch_size: 1
     num_workers: 10
   aria_bimanual:
-    batch_size: 32
+    batch_size: 1
     num_workers: 10
