@@ -9,11 +9,9 @@ import numpy as np
 import torch
 from robot_utils import RateLoop
 
-# from egomimic.algo import *
 from egomimic.models.denoising_policy import DenoisingPolicy
 from egomimic.pl_utils.pl_model import ModelWrapper
 from egomimic.rldb.embodiment.embodiment import get_embodiment
-from egomimic.rldb.utils import RLDBDataset
 from egomimic.robot.eva.eva_kinematics import EvaMinkKinematicsSolver
 from egomimic.utils.egomimicUtils import (
     CameraTransforms,
@@ -108,100 +106,6 @@ class ReplayRollout(Rollout):
             return self.actions[i]
         else:
             return None
-
-
-# TODO: Work with all types of arms
-class ReplayRolloutLerobot(Rollout):
-    def __init__(
-        self,
-        dataset_path,
-        repo_id,
-        cartesian,
-        extrinsics_key,
-        episodes=[1],
-        arm="right",
-    ):
-        super().__init__()
-        self.dataset_path = dataset_path
-        self.cartesian = cartesian
-        self.extrinsics = CameraTransforms(
-            intrinsics_key="base", extrinsics_key=extrinsics_key
-        ).extrinsics
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.debug_actions = None
-        self.arm = arm
-
-        dataset = RLDBDataset(
-            repo_id=repo_id,
-            root=dataset_path,
-            local_files_only=True,
-            episodes=episodes,
-            mode="sample",
-        )
-        data_loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
-        self.iter = iter(data_loader)
-        self.data_loader = data_loader
-        self.i = 0
-        self.actions_key = "actions_cartesian" if cartesian else "actions_joints"
-        self.actions = None
-
-    def rollout_step(self, i):
-        while i >= self.i:
-            try:
-                batch = next(self.iter)
-            except StopIteration:
-                self.iter = iter(self.data_loader)
-                batch = next(self.iter)
-
-            cur_actions = (
-                batch[self.actions_key].cpu().numpy()[:, 0, :]
-            )  # (B, 7) or (B, 14)
-
-            if self.cartesian:
-                if self.arm == "both":
-                    left_actions = cur_actions[:, :7]
-                    right_actions = cur_actions[:, 7:14]
-
-                    left_grip = (left_actions[:, 6:7]).copy()
-                    right_grip = (right_actions[:, 6:7]).copy()
-
-                    transformed_left = cam_frame_to_base_frame(
-                        left_actions[:, :6].copy(), self.extrinsics["left"]
-                    )
-                    transformed_right = cam_frame_to_base_frame(
-                        right_actions[:, :6].copy(), self.extrinsics["right"]
-                    )
-
-                    left_out = np.hstack([transformed_left, left_grip])
-                    right_out = np.hstack([transformed_right, right_grip])
-                    cur_actions = np.hstack([left_out, right_out])
-                else:
-                    grip = (cur_actions[:, 6:7]).copy()
-                    transformed_6dof = cam_frame_to_base_frame(
-                        cur_actions[:, :6].copy(), self.extrinsics[self.arm]
-                    )
-                    cur_actions = np.hstack([transformed_6dof, grip])
-
-            cur_actions = cur_actions.astype(np.float32, copy=False)
-
-            if self.actions is None or self.actions.shape[0] == 0:
-                self.actions = cur_actions
-            else:
-                self.actions = np.concatenate([self.actions, cur_actions], axis=0)
-
-            self.i += cur_actions.shape[0]
-
-        if self.actions is None:
-            return None
-        if i < 0 or i >= self.actions.shape[0]:
-            return None
-        return self.actions[i]
-
-    def reset(self):
-        self.iter = iter(self.data_loader)
-        self.i = 0
-        self.actions = None
-        self.debug_actions = None
 
 
 class PolicyRollout(Rollout):
@@ -393,6 +297,8 @@ class PolicyRollout(Rollout):
 
 def reset_rollout(ri, policy):
     print("Resetting rollout: going home + clearing policy state")
+    if isinstance(policy, ReplayRollout):
+        return
     ri.set_home()
     if hasattr(policy, "reset"):
         policy.reset()
@@ -423,17 +329,7 @@ def main(
 
     ri = ARXInterface(arms=arms_list)
 
-    if policy_path is None and dataset_path is not None and repo_id is not None:
-        rollout_type = "replay_lerobot"
-        policy = ReplayRolloutLerobot(
-            dataset_path=dataset_path,
-            repo_id=repo_id,
-            cartesian=cartesian,
-            extrinsics_key="x5Dec13_2",
-            episodes=episodes,
-            arm=arms,
-        )
-    elif policy_path is not None:
+    if policy_path is not None:
         rollout_type = "policy"
         policy = PolicyRollout(
             arm=arms,

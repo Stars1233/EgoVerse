@@ -15,6 +15,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from tqdm import tqdm
 
 # Add path to oculus_reader if needed
 sys.path.append(os.path.join(os.path.dirname(__file__), "oculus_reader"))
@@ -570,6 +571,7 @@ def collect_demo(
     demo_dir: str = DEMO_DIR,
     recording: bool = True,
     auto_episode_start: int = None,
+    episode_length: int = None,
 ):
     """
     Collect demonstrations using VR controller.
@@ -631,15 +633,20 @@ def collect_demo(
             if all_cam_images_in is True:
                 break
     print("All cameras are ready --------------")
-
     auto_episode_id = auto_episode_start
-
     while True:
+        break_loop = False
         if auto_episode_id is None:
             episode_id = input("Input the episode id: ")
         else:
             episode_id = auto_episode_id
             print(f"Set episode id to {episode_id} teleop enabled")
+        pbar = None
+        steps_in_episode = 0
+
+        collecting_data = False
+        reset_data(demo_data)
+
         with RateLoop(frequency=frequency, verbose=False) as loop:
             for i in loop:
                 # Read VR controller (get raw transformation matrices)
@@ -654,39 +661,59 @@ def collect_demo(
                 if vr_data["buttons"]["B"]:
                     if prev_vr_data is not None and not prev_vr_data["buttons"]["B"]:
                         if collecting_data is True:
+                            if pbar is not None:
+                                pbar.close()
+                                pbar = None
                             collecting_data = False
+
                             save_demo(demo_data, demo_dir, episode_id, camera_names)
+                            print("\nSaving DEMO ------------------------------")
                             if auto_episode_id is not None:
                                 auto_episode_id += 1
+                            prev_vr_data = None
                             break
                         else:
                             robot_interface.set_home()
                             print(
-                                "Start Collecting Data ------------------------------"
+                                "\nStart Collecting Data ------------------------------"
                             )
                             collecting_data = True
                             reset_data(demo_data)
+                            if episode_length is not None:
+                                if pbar is not None:
+                                    pbar.close()
+                                pbar = tqdm(
+                                    total=episode_length,
+                                    desc=f"Episode {episode_id}",
+                                    unit="step",
+                                )
+                                steps_in_episode = 0
 
-                # x to create the neutral frame transformations
                 if (
                     vr_data["buttons"]["X"]
                     and prev_vr_data is not None
                     and not prev_vr_data["buttons"]["X"]
                 ):
+                    if pbar is not None:
+                        pbar.close()
+                        steps_in_episode = 0
                     print("Deleting Data -----------------------------------")
-                    # collecting_data = False
+                    collecting_data = False
                     reset_data(demo_data)
-                    # print("set vr neutral arm pose")
-                    # for arm in arms_list:
-                    #     vr_neutral_frame_delta[arm] = vr_data[arm]["T"]
 
                 # kill the arm
                 if vr_data["buttons"]["A"]:
-                    break
+                    if pbar is not None:
+                        pbar.close()
+                        pbar = None
+                    return
 
                 if vr_data["buttons"]["Y"]:
                     collecting_data = False
                     reset_data(demo_data)
+                    if pbar is not None:
+                        pbar.close()
+                        steps_in_episode = 0
                     robot_interface.set_home()
                     prev_vr_data = None
 
@@ -776,9 +803,9 @@ def collect_demo(
                                     cmd_pos[arm]
                                 )
                                 cmd_eepose_action[arm_offset + 3 : arm_offset + 6] = (
-                                    R.from_quat(cmd_quat[arm]).as_euler(
-                                        "ZYX", degrees=False
-                                    )
+                                    R.from_quat(
+                                        cmd_quat[arm]
+                                    ).as_euler("ZYX", degrees=False)
                                 )  # ypr convention
                                 cmd_eepose_action[arm_offset + 6] = (
                                     gripper_pos[arm] - GRIPPER_CLOSE_VALUE
@@ -793,18 +820,36 @@ def collect_demo(
                                 robot_interface.get_joints(arm)
                             )
 
-                        if collecting_data:
-                            obs = robot_interface.get_obs()
+                if collecting_data and (vr.l_engaged or vr.r_engaged):
+                    obs = robot_interface.get_obs()
 
-                            obs_copy = {}
-                            for key, val in obs.items():
-                                obs_copy[key] = (
-                                    None if val is None else val.copy()
-                                )  # NumPy copy
-                            demo_data["obs"].append(obs_copy)
-                            demo_data["cmd_joint_actions"].append(cmd_joint_action)
-                            demo_data["robot_joint_actions"].append(robot_joint_action)
-                            demo_data["cmd_eepose_actions"].append(cmd_eepose_action)
+                    obs_copy = {}
+                    for key, val in obs.items():
+                        obs_copy[key] = (
+                            None if val is None else val.copy()
+                        )  # NumPy copy
+                    demo_data["obs"].append(obs_copy)
+                    demo_data["cmd_joint_actions"].append(cmd_joint_action)
+                    demo_data["robot_joint_actions"].append(robot_joint_action)
+                    demo_data["cmd_eepose_actions"].append(cmd_eepose_action)
+                    if episode_length is not None and pbar is not None:
+                        steps_in_episode += 1
+                        pbar.update(1)
+                        if steps_in_episode >= episode_length:
+                            collecting_data = False
+                            pbar.close()
+                            pbar = None
+                            save_demo(demo_data, demo_dir, episode_id, camera_names)
+                            print("Episode length reached, stopping recording.")
+                            print("Saving DEMO ------------------------------")
+                            if auto_episode_id is not None:
+                                auto_episode_id += 1
+                            prev_vr_data = None
+                            break_loop = True
+                            break
+
+                if break_loop:
+                    break
 
                 if vr_data is not None:
                     prev_vr_data = vr_data
@@ -846,6 +891,12 @@ if __name__ == "__main__":
         default=None,
         help="If set, start at this episode id and auto-increment on each recording",
     )
+    parser.add_argument(
+        "--episode-length",
+        type=int,
+        default=None,
+        help="If set, automatically stop recording after this many steps",
+    )
 
     args = parser.parse_args()
 
@@ -877,4 +928,5 @@ if __name__ == "__main__":
         frequency=args.frequency,
         demo_dir=args.demo_dir,
         auto_episode_start=args.auto_episode_start,
+        episode_length=args.episode_length,
     )
