@@ -145,7 +145,7 @@ def transform_coordinates(palm_pose, x_axis, y_axis, z_axis, transform):
 def coordinate_frame_to_ypr(x_axis, y_axis, z_axis):
     rot_matrix = np.column_stack([x_axis, y_axis, z_axis])
     rotation = R.from_matrix(rot_matrix)
-    euler_ypr = rotation.as_euler("zyx", degrees=False)
+    euler_ypr = rotation.as_euler("ZYX", degrees=False)
     if np.isnan(euler_ypr).any():
         euler_ypr = np.zeros_like(euler_ypr)
     return euler_ypr

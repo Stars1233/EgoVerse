@@ -8,13 +8,16 @@ import h5py
 import numpy as np
 import torch
 from robot_utils import RateLoop
+from scipy.spatial.transform import Rotation as R
 
 from egomimic.models.denoising_policy import DenoisingPolicy
 from egomimic.pl_utils.pl_model import ModelWrapper
 from egomimic.rldb.embodiment.embodiment import get_embodiment
+from egomimic.rldb.embodiment.eva import Eva
 from egomimic.robot.eva.eva_kinematics import EvaMinkKinematicsSolver
 from egomimic.utils.egomimicUtils import (
     CameraTransforms,
+    base_frame_to_cam_frame,
     cam_frame_to_base_frame,
     draw_actions,
     interpolate_arr,
@@ -31,8 +34,6 @@ import tty
 from robot_interface import ARXInterface
 
 
-# from stream_aria import AriaRecorder
-# from stream_d405 import RealSenseRecorder
 def visualize_actions(ims, actions, extrinsics, intrinsics, arm="both"):
     if actions.shape[-1] == 7 or actions.shape[-1] == 14:
         ac_type = "joints"
@@ -48,9 +49,107 @@ def visualize_actions(ims, actions, extrinsics, intrinsics, arm="both"):
     return ims
 
 
+R_t_e = np.array(
+    [
+        [0, 0, 1],
+        [-1, 0, 0],
+        [0, -1, 0],
+    ],
+    dtype=float,
+)
+
+inv_R_t_e = np.linalg.inv(R_t_e)
+
+
+def ee_pose_to_rot_ee_frame_batch(pose):
+    pose = np.asarray(pose)
+    xyz = pose[..., :3]
+    ypr = pose[..., 3:6]
+    R_ee = R.from_euler("ZYX", ypr).as_matrix()
+    R_rot = R_t_e @ R_ee
+    ypr_rot = R.from_matrix(R_rot).as_euler("ZYX")
+    return np.concatenate([xyz, ypr_rot], axis=-1)
+
+
+def rot_ee_frame_to_ee_pose_batch(pose_rot):
+    pose_rot = np.asarray(pose_rot)
+    xyz = pose_rot[..., :3]
+    ypr = pose_rot[..., 3:6]
+    R_rot = R.from_euler("ZYX", ypr).as_matrix()
+    R_ee = inv_R_t_e @ R_rot
+    ypr_ee = R.from_matrix(R_ee).as_euler("ZYX")
+    return np.concatenate([xyz, ypr_ee], axis=-1)
+
+
+def ee_pose_to_rot_ee_frame(pose):
+    return ee_pose_to_rot_ee_frame_batch(pose[None, ...])[0]
+
+
+def rot_ee_frame_to_ee_pose(pose_rot):
+    return rot_ee_frame_to_ee_pose_batch(pose_rot[None, ...])[0]
+
+
+def viz_rot_ee_pose(image, eepose, action_image_path, rot_image_path):
+    """
+    Save both cartesian-action and orientation-axis visualizations for an EVA
+    action chunk using the same conventions as the debug path.
+    """
+    arr = np.asarray(eepose, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr[None, ...]
+    if arr.ndim != 2 or arr.shape[1] not in (12, 14):
+        raise ValueError(f"Expected eepose shape (T, 12|14), got {arr.shape}")
+
+    os.makedirs(os.path.dirname(action_image_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(rot_image_path) or ".", exist_ok=True)
+
+    img = np.asarray(image)
+    if img.ndim == 3 and img.shape[0] in (1, 3):
+        img = np.transpose(img, (1, 2, 0))
+    if img.ndim != 3 or img.shape[-1] != 3:
+        raise ValueError(
+            f"Expected image shape (H, W, 3) or (3, H, W), got {img.shape}"
+        )
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (img * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            img = img.clip(0, 255).astype(np.uint8)
+
+    if arr.shape[1] == 14:
+        left_xyz = arr[:, :3]
+        right_xyz = arr[:, 7:10]
+    else:
+        left_xyz = arr[:, :3]
+        right_xyz = arr[:, 6:9]
+    action_xyz = np.hstack([left_xyz, right_xyz]).astype(np.float32, copy=False)
+
+    camera_transforms = CameraTransforms(
+        intrinsics_key="base", extrinsics_key="x5Dec13_2"
+    )
+    im_action = visualize_actions(
+        img.copy(),
+        action_xyz,
+        camera_transforms.extrinsics,
+        camera_transforms.intrinsics,
+        arm="both",
+    )
+    cv2.imwrite(action_image_path, im_action)
+
+    eva_viz_batch = {
+        "observations.images.front_img_1": torch.from_numpy(img[None, ...]),
+        "actions_cartesian": torch.from_numpy(arr[None, ...]),
+    }
+    im_rot = Eva.viz_transformed_batch(eva_viz_batch, mode="palm_axes")
+    cv2.imwrite(rot_image_path, im_rot)
+    return im_action, im_rot
+
+
+GRIPPER_WIDTH = 0.09
 # Control parameters
 DEFAULT_FREQUENCY = 30  # Hz
 QUERY_FREQUENCY = 30
+DEFAULT_RESAMPLE_LENGTH = 45
 
 RIGHT_CAM_SERIAL = ""
 LEFT_CAM_SERIAL = ""
@@ -60,6 +159,8 @@ EMBODIMENT_MAP = {
     "left": 7,
     "right": 6,
 }
+
+TEMP_DIR = "/home/robot/temp_dir"
 
 
 class _KeyPoll:
@@ -117,6 +218,7 @@ class PolicyRollout(Rollout):
         cartesian,
         extrinsics_key,
         resampled_action_len=None,
+        debug=False,
     ):
         super().__init__()
         self.arm = arm
@@ -138,6 +240,7 @@ class PolicyRollout(Rollout):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.debug_actions = None
         self.resampled_action_len = resampled_action_len
+        self.debug = debug
 
     def _downsample_chunk(self, chunk: np.ndarray, target_len: int) -> np.ndarray:
         if target_len is None or target_len <= 0 or chunk.shape[0] == target_len:
@@ -171,34 +274,36 @@ class PolicyRollout(Rollout):
                 if self.arm == "both":
                     left_actions = self.actions[:, :7]
                     right_actions = self.actions[:, 7:]
+
                     transformed_left = cam_frame_to_base_frame(
                         left_actions[:, :6].copy(), self.extrinsics["left"]
                     )
                     transformed_right = cam_frame_to_base_frame(
                         right_actions[:, :6].copy(), self.extrinsics["right"]
                     )
+                    transformed_left = rot_ee_frame_to_ee_pose_batch(transformed_left)
+                    transformed_right = rot_ee_frame_to_ee_pose_batch(transformed_right)
+                    gripper_left = left_actions[:, 6:7]
+                    gripper_right = right_actions[:, 6:7]
                     if left_actions.shape[1] == 7:
-                        left_actions = np.hstack(
-                            [transformed_left, left_actions[:, 6:7]]
-                        )
+                        left_actions = np.hstack([transformed_left, gripper_left])
                     else:
                         left_actions = transformed_left
                     if right_actions.shape[1] == 7:
-                        right_actions = np.hstack(
-                            [transformed_right, right_actions[:, 6:7]]
-                        )
+                        right_actions = np.hstack([transformed_right, gripper_right])
                     else:
                         right_actions = transformed_right
                     self.actions = np.hstack([left_actions, right_actions])
                 else:
+                    eepose = rot_ee_frame_to_ee_pose_batch(self.actions[:, :6].copy())
+                    self.actions[:, :6] = eepose
                     transformed_6dof = cam_frame_to_base_frame(
                         self.actions[:, :6].copy(), self.extrinsics[self.arm]
                     )
                     # Preserve gripper if present (7th value)
+                    gripper = self.actions[:, 6:7]
                     if self.actions.shape[1] == 7:
-                        self.actions = np.hstack(
-                            [transformed_6dof, self.actions[:, 6:7]]
-                        )
+                        self.actions = np.hstack([transformed_6dof, gripper])
                     else:
                         self.actions = transformed_6dof
 
@@ -206,7 +311,7 @@ class PolicyRollout(Rollout):
                 self.actions = self._downsample_chunk(
                     self.actions, self.resampled_action_len
                 )
-                self.debug_actions = self.actions.copy()
+            # print(f"actions: {self.actions[6:7]}, debug_actions: {self.debug_actions[6:7]}")
 
             print(f"Inference time: {(time.time() - start_infer_t)}s")
 
@@ -258,13 +363,39 @@ class PolicyRollout(Rollout):
             data["left_wrist_img"] = left
             joint_positions = obs["joint_positions"]
 
-        data["joint_positions"] = torch.from_numpy(joint_positions).reshape(1, 1, -1)
+        joint_positions = torch.as_tensor(joint_positions)
         data["embodiment"] = torch.tensor([self.embodiment_id], dtype=torch.int64)
 
         if not self.cartesian:
-            data["actions_joints"] = torch.zeros_like(data["joint_positions"])
+            data["actions_joints"] = torch.zeros_like(joint_positions.reshape(1, 1, -1))
+            data["joint_positions"] = torch.from_numpy(joint_positions).reshape(1, -1)
         else:
-            data["actions_cartesian"] = torch.zeros_like(data["joint_positions"])
+            data["actions_cartesian"] = torch.zeros_like(
+                joint_positions.reshape(1, 1, -1)
+            )
+            left_ee_pose = ee_pose_to_rot_ee_frame(obs["ee_poses"][:6])
+            right_ee_pose = ee_pose_to_rot_ee_frame(obs["ee_poses"][7:13])
+            left_ee_pose = base_frame_to_cam_frame(
+                left_ee_pose.reshape(1, -1), self.extrinsics["left"]
+            ).squeeze()
+            right_ee_pose = base_frame_to_cam_frame(
+                right_ee_pose.reshape(1, -1), self.extrinsics["right"]
+            ).squeeze()
+            obs["ee_poses"][:6] = left_ee_pose
+            obs["ee_poses"][7:13] = right_ee_pose
+            data["ee_pose"] = torch.from_numpy(obs["ee_poses"]).reshape(1, -1)
+
+            print(
+                f"left_gripper: {obs['ee_poses'][6:7]}, right_gripper: {obs['ee_poses'][13:14]}"
+            )
+            if self.arm == "both" and self.debug:
+                os.makedirs("debug", exist_ok=True)
+                viz_rot_ee_pose(
+                    obs["front_img_1"],
+                    obs["ee_poses"],
+                    action_image_path="debug/rot_ee_pose_action.png",
+                    rot_image_path="debug/rot_ee_pose_axes.png",
+                )
 
         processed_batch = {self.embodiment_id: data}
 
@@ -295,6 +426,65 @@ class PolicyRollout(Rollout):
                     self.policy.model.nets.policy.heads[head].num_inference_steps = 10
 
 
+def debug_policy(
+    obs, camera_transforms, policy, step_i, cartesian, arms, kinematics_solver
+):
+    os.makedirs("debug", exist_ok=True)
+    if isinstance(obs["front_img_1"], torch.Tensor):
+        if obs["front_img_1"].dim() == 4:
+            img = obs["front_img_1"][0].permute(1, 2, 0).cpu().numpy()
+        elif obs["front_img_1"].dim() == 3:
+            img = obs["front_img_1"].permute(1, 2, 0).cpu().numpy()
+        else:
+            img = obs["front_img_1"].cpu().numpy()
+    else:
+        img = obs["front_img_1"]
+        if img.ndim == 3 and img.shape[0] == 3:
+            img = img.transpose(1, 2, 0)
+    img = img.astype(np.uint8)
+
+    if cartesian:
+        if arms == "both":
+            left_actions = policy.debug_actions[:, :3]
+            right_actions = policy.debug_actions[:, 7:10]
+            action_xyz = np.hstack([left_actions, right_actions])
+        else:
+            action_xyz = policy.debug_actions[:, :3]
+    else:
+        jnts = policy.actions[:, :7]
+        actions_xyz = np.zeros((jnts.shape[0], 3), dtype=np.float32)
+        for j in range(actions_xyz.shape[0]):
+            pos, _rot = kinematics_solver.fk(jnts[j][:6])
+            actions_xyz[j] = pos
+        action_xyz = actions_xyz
+
+    im_viz = visualize_actions(
+        img,
+        action_xyz,
+        camera_transforms.extrinsics,
+        camera_transforms.intrinsics,
+        arm=arms,
+    )
+    cv2.imwrite(f"debug/debug_{step_i}.png", im_viz)
+    if (
+        cartesian
+        and arms == "both"
+        and policy.debug_actions is not None
+        and policy.debug_actions.ndim == 2
+        and policy.debug_actions.shape[1] in (12, 14)
+    ):
+        eva_viz_batch = {
+            "observations.images.front_img_1": torch.from_numpy(
+                obs["front_img_1"][None, ...]
+            ),
+            "actions_cartesian": torch.from_numpy(
+                policy.debug_actions.astype(np.float32, copy=False)[None, ...]
+            ),
+        }
+        im_axes = Eva.viz_transformed_batch(eva_viz_batch, mode="palm_axes")
+        cv2.imwrite(f"debug/debug_axes_{step_i}.png", im_axes)
+
+
 def reset_rollout(ri, policy):
     print("Resetting rollout: going home + clearing policy state")
     if isinstance(policy, ReplayRollout):
@@ -315,8 +505,6 @@ def main(
     query_frequency=None,
     policy_path=None,
     dataset_path=None,
-    repo_id=None,
-    episodes=[0],
     debug=False,
     resampled_action_len=None,
 ):
@@ -338,6 +526,7 @@ def main(
             cartesian=cartesian,
             extrinsics_key="x5Dec13_2",
             resampled_action_len=resampled_action_len,
+            debug=debug,
         )
     elif dataset_path is not None:
         rollout_type = "replay"
@@ -400,56 +589,15 @@ def main(
                             break
 
                         if debug and rollout_type == "policy":
-                            os.makedirs("debug", exist_ok=True)
-
-                            if isinstance(obs["front_img_1"], torch.Tensor):
-                                if obs["front_img_1"].dim() == 4:
-                                    img = (
-                                        obs["front_img_1"][0]
-                                        .permute(1, 2, 0)
-                                        .cpu()
-                                        .numpy()
-                                    )
-                                elif obs["front_img_1"].dim() == 3:
-                                    img = (
-                                        obs["front_img_1"]
-                                        .permute(1, 2, 0)
-                                        .cpu()
-                                        .numpy()
-                                    )
-                                else:
-                                    img = obs["front_img_1"].cpu().numpy()
-                            else:
-                                img = obs["front_img_1"]
-                                if img.ndim == 3 and img.shape[0] == 3:
-                                    img = img.transpose(1, 2, 0)
-                            img = img.astype(np.uint8)
-
-                            for arm in arms_list:
-                                arm_offset = (
-                                    7 if (arm == "right" and arms == "both") else 0
-                                )
-
-                                if cartesian:
-                                    action_xyz = policy.debug_actions[:, :3]
-                                else:
-                                    jnts = policy.actions[:, :7]
-                                    actions_xyz = np.zeros(
-                                        (jnts.shape[0], 3), dtype=np.float32
-                                    )
-                                    for j in range(actions_xyz.shape[0]):
-                                        pos, _rot = kinematics_solver.fk(jnts[j][:6])
-                                        actions_xyz[j] = pos
-                                    action_xyz = actions_xyz
-
-                                im_viz = visualize_actions(
-                                    img,
-                                    action_xyz,
-                                    camera_transforms.extrinsics,
-                                    camera_transforms.intrinsics,
-                                    arm=arm,
-                                )
-                                cv2.imwrite(f"debug/debug_{arm}_{step_i}.png", im_viz)
+                            debug_policy(
+                                obs,
+                                camera_transforms,
+                                policy,
+                                step_i,
+                                cartesian,
+                                arms,
+                                kinematics_solver,
+                            )
 
                         for arm in arms_list:
                             arm_offset = 7 if (arm == "right" and arms == "both") else 0
@@ -489,8 +637,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--policy-path", type=str, help="policy checkpoint path")
     parser.add_argument("--dataset-path", type=str, help="dataset path for replay")
-    parser.add_argument("--repo-id", type=str, help="repo id for replay")
-    parser.add_argument("--episodes", type=int, nargs="+", help="episodes to replay")
     parser.add_argument(
         "--cartesian",
         action="store_true",
@@ -500,7 +646,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--resampled-action-len",
         type=int,
-        default=None,
+        default=DEFAULT_RESAMPLE_LENGTH,
         help="Resample each predicted action chunk to this length (e.g., 100 -> 45). Euler if --cartesian.",
     )
 
@@ -511,7 +657,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    episodes = args.episodes if args.episodes is not None else [0]
 
     print(f"Resampling actions to {args.resampled_action_len}")
     main(
@@ -520,8 +665,6 @@ if __name__ == "__main__":
         query_frequency=args.query_frequency,
         policy_path=args.policy_path,
         dataset_path=args.dataset_path,
-        repo_id=args.repo_id,
-        episodes=episodes,
         cartesian=args.cartesian,
         debug=args.debug,
         resampled_action_len=args.resampled_action_len,
