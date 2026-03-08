@@ -104,7 +104,6 @@ PY
   printf "R2_SECRET_ACCESS_KEY=%q\n" "$R2_SECRET_ACCESS_KEY"
   if [[ "$R2_SESSION_TOKEN" != "__EMPTY__" ]]; then
     printf "R2_SESSION_TOKEN=%q\n" "$R2_SESSION_TOKEN"
-    printf "AWS_SESSION_TOKEN=%q\n" "$R2_SESSION_TOKEN"
   fi
   printf "AWS_ENDPOINT_URL_S3=%q\n" "$AWS_ENDPOINT_URL_S3"
   printf "R2_ENDPOINT_URL=%q\n" "$AWS_ENDPOINT_URL_S3"
