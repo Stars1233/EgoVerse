@@ -131,15 +131,19 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
         instantiate_copy.resolver.key_map = km
         norm_dataset = hydra.utils.instantiate(instantiate_copy)
+        # infer_norm_from_dataset: load from precomputed JSON/dir if set, else compute (no disk write).
         data_schematic.infer_norm_from_dataset(
             norm_dataset,
             dataset_name,
-            sample_frac=cfg.norm_stats.sample_frac,
-            num_workers=cfg.norm_stats.num_workers,
-            benchmark_dir=os.path.join(
-                cfg.trainer.default_root_dir, "benchmark_stats.json"
+            sample_frac=OmegaConf.select(cfg, "norm_stats.sample_frac", default=1.0),
+            num_workers=OmegaConf.select(cfg, "norm_stats.num_workers", default=4),
+            precomputed_norm_path=OmegaConf.select(
+                cfg, "norm_stats.precomputed_norm_path", default=None
             ),
         )
+        # cache_stats: optional norm_stats.json under trainer.default_root_dir/norm_stats/ (numeric arrays only).
+        if OmegaConf.select(cfg, "norm_stats.cache_stats", default=False):
+            data_schematic.cache_stats(save_cache_dir=cfg.trainer.default_root_dir)
 
     if cfg.reject_outliers:
         # Propagate the shared data schematic to top-level MultiDatasets for bounds checks.
@@ -151,6 +155,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     viz_func = cfg.visualization
     viz_func_dict = {}
     for embodiment_name, embodiment_viz_func in viz_func.items():
+        viz_func_dict[embodiment_name] = hydra.utils.instantiate(embodiment_viz_func)
+
+    viz_func_dict = {}
+    for embodiment_name, embodiment_viz_func in cfg.visualization.items():
         viz_func_dict[embodiment_name] = hydra.utils.instantiate(embodiment_viz_func)
 
     # NOTE: We also pass the data_schematic_dict into the robomimic model's instatiation now that we've initialzied the shapes and norm stats.  In theory, upon loading the PL checkpoint, it will remember this, but let's see.

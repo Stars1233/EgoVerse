@@ -32,7 +32,6 @@ class DataSchematic(object):
         """
         Initialize with a schematic dictionary and create a DataFrame.
 
-
         Args:
             schematic_dict:
                 {embodiment_name}:
@@ -52,10 +51,12 @@ class DataSchematic(object):
                     .
                     .
                     .
-
+            viz_img_key (dict): Mapping from embodiment name to visualization image key.
+            norm_mode (str): Normalization mode ("zscore", "minmax", or "quantile").
 
         Attributes:
-            df (pd.DataFrame): Columns include 'key_name', 'key_type', and 'shape', 'embodiment'.
+            df (pd.DataFrame): Columns include "key_name", "key_type", "zarr_key",
+                "shape", and "embodiment".
         """
 
         rows = []
@@ -79,18 +80,14 @@ class DataSchematic(object):
         self.shapes_infered = False
         self.norm_mode = norm_mode
         self.norm_stats = {emb: {} for emb in self.embodiments}
+        self._norm_run_metadata: dict[str, float | int | None] | None = None
 
     def zarr_key_to_keyname(self, zarr_key, embodiment):
         """
         Get the key name from the zarr key.
-
-
         Args:
             zarr_key (str): zarr key, e.g., "front_img_1".
-            embodiment (int): int id corresponding to embodiment
-
-
-
+            embodiment (int): Integer ID corresponding to an embodiment.
 
         Returns:
             str: Key name, e.g., "front_img_1".
@@ -107,12 +104,9 @@ class DataSchematic(object):
     def keyname_to_zarr_key(self, key_name, embodiment):
         """
         Get the zarr key from the key name.
-
-
         Args:
             key_name (str): Key name, e.g., "front_img_1_line".
-            embodiment (int): int id corresponding to embodiment
-
+            embodiment (int): Integer ID corresponding to an embodiment.
 
         Returns:
             str: zarr key, e.g., "front_img_1".
@@ -129,11 +123,9 @@ class DataSchematic(object):
         """
         Update shapes in the DataFrame based on a batch.
 
-
         Args:
             batch (dict): Maps key names (str) to tensors with shapes, e.g.,
                 {"key": tensor of shape (3, 480, 640, 3)}.
-
 
         Updates:
             The 'shape' column in the DataFrame is updated to match the inferred shapes (stored as tuples).
@@ -158,28 +150,32 @@ class DataSchematic(object):
         seed: int = 42,
         max_samples: int | None = None,
         batch_size: int = 512,
-        num_workers: int = 10,
-        benchmark_dir: str | None = None,
+        num_workers: int = 4,
+        precomputed_norm_path: str | None = None,
     ):
         """
+        Load or compute normalization statistics for an embodiment; does not write cache files.
+
+        If ``precomputed_norm_path`` is set and contains ``norm_stats.json`` with stats for this
+        embodiment, ``numpy`` float32 arrays are built from JSON numbers / nested lists under
+        ``stats``. Otherwise stats are computed from ``dataset`` and stored the same way.
+
+        Timing and sample count for the last run are stored in ``self._norm_run_metadata`` for
+        :meth:`cache_stats`.
+
         Args:
-            norm_dataset: the dataset to infer norm from (should not have image keys to increase performance)
-            dataset_name: the name of the dataset
-            sample_frac: the fraction of the dataset to sample
-            seed: the seed for the random number generator
-            max_samples: the maximum number of samples to use
-            log_every: the number of samples to log after
+            dataset: Dataset used to infer normalization stats (ignored when precomputed loads).
+            dataset_name: Name or ID of the embodiment/dataset.
+            sample_frac (float): Fraction of dataset elements to sample.
+            seed (int): Random seed for sampling.
+            max_samples (int | None): Optional upper bound on sampled elements.
+            batch_size (int): Batch size used by the dataloader.
+            num_workers (int): Number of dataloader workers.
+            precomputed_norm_path (str | None): Directory containing ``norm_stats.json``.
         """
         embodiment = dataset_name
         if isinstance(embodiment, str):
             embodiment = get_embodiment_id(embodiment)
-
-        benchmark_stats = None
-        if benchmark_dir is not None:
-            os.makedirs(benchmark_dir, exist_ok=True)
-            benchmark_file = os.path.join(benchmark_dir, "benchmark.json")
-            benchmark_stats = {}
-            benchmark_stats["stats"] = {}
 
         norm_keys = []
         norm_keys.extend(self.keys_of_type("proprio_keys", embodiment))
@@ -189,6 +185,30 @@ class DataSchematic(object):
                 f"[NormStats] No proprio/action keys for embodiment={embodiment}"
             )
             return
+
+        if embodiment not in self.norm_stats:
+            self.norm_stats[embodiment] = {}
+        
+        # Load precomputed norm stats if available
+        if precomputed_norm_path is not None:
+            if os.path.isdir(precomputed_norm_path):
+                precomputed_file = os.path.join(precomputed_norm_path, "norm_stats.json")
+            elif os.path.isfile(precomputed_norm_path):
+                precomputed_file = precomputed_norm_path
+            else:
+                logger.warning(
+                    f"[NormStats] precomputed_norm_path={precomputed_norm_path} is not a valid directory or file"
+                )
+                return
+            if os.path.isfile(precomputed_file):
+                with open(precomputed_file, "r") as f:
+                    precomputed_norm_stats = json.load(f)
+                    self.norm_stats[embodiment] = precomputed_norm_stats["stats"].get(str(embodiment), {})
+                    self._norm_run_metadata = precomputed_norm_stats.get("norm_run_metadata", None)
+                    logger.info(
+                        f"[NormStats] Loaded precomputed stats for embodiment={embodiment} from {precomputed_file}"
+                    )
+                    return
 
         loader = torch.utils.data.DataLoader(
             dataset,
@@ -212,48 +232,15 @@ class DataSchematic(object):
             f"[NormStats] sampling {n_samples}/{N} (~{100 * sample_frac:.1f}%) indices"
         )
 
-        collected = {k: [] for k in norm_keys}
-
         loading_start_time = time.time()
-        cur_num_samples = 0
-        logger.info(
-            f"[NormStats] Starting to load data for norm inference with batch_size={batch_size} and num_workers={num_workers}"
+        collected = self._collect_norm_samples(
+            loader=loader,
+            norm_keys=norm_keys,
+            embodiment=embodiment,
+            n_samples=n_samples,
+            batch_size=batch_size,
+            num_workers=num_workers,
         )
-        with tqdm(total=n_samples, unit="sample") as pbar:
-            for batch in loader:
-                # check what emb you got
-                # then have a separate set of samples per embodiment, and calc norm stats separately
-                remaining = n_samples - cur_num_samples
-                if remaining <= 0:
-                    break
-
-                batch_len = None
-                for value in batch.values():
-                    if hasattr(value, "shape") and len(value.shape) > 0:
-                        batch_len = int(value.shape[0])
-                        break
-
-                if batch_len is None:
-                    raise ValueError(
-                        "[NormStats] Could not infer batch size from DataLoader batch"
-                    )
-
-                take = min(remaining, batch_len)
-
-                for k in norm_keys:
-                    batch_key = self.keyname_to_zarr_key(k, embodiment)
-                    if batch_key is None:
-                        continue
-                    if batch_key not in batch:
-                        continue
-                    x = batch[batch_key][:take]
-                    if hasattr(x, "detach"):
-                        x = x.detach().cpu().numpy()
-                    collected[k].append(x)
-
-                cur_num_samples += take
-                pbar.update(take)
-
         del_keys = []
         for k in norm_keys:
             if len(collected[k]) == 0:
@@ -262,10 +249,7 @@ class DataSchematic(object):
             del collected[k]
             norm_keys.remove(k)
 
-        loading_end_time = time.time()
-        loading_time = loading_end_time - loading_start_time
-        if benchmark_stats is not None:
-            benchmark_stats["loading_time"] = loading_time
+        loading_time = time.time() - loading_start_time
 
         computing_start_time = time.time()
         for k in norm_keys:
@@ -275,114 +259,119 @@ class DataSchematic(object):
             collected[k] = np.concatenate(collected[k], axis=0)
 
             X = collected[k]
-
-            mean = np.mean(X, axis=0)
-            std = np.std(X, axis=0)
-            minv = np.min(X, axis=0)
-            maxv = np.max(X, axis=0)
-            median = np.median(X, axis=0)
-            q1 = np.percentile(X, 1, axis=0)
-            q99 = np.percentile(X, 99, axis=0)
-            q0_01 = np.percentile(X, 0.01, axis=0)
-            q99_99 = np.percentile(X, 99.99, axis=0)
-
+            stats_np = self._compute_stats_for_array(X)
             self.norm_stats[embodiment][k] = {
-                "mean": torch.from_numpy(np.array(mean, dtype=np.float32)).float(),
-                "std": torch.from_numpy(np.array(std, dtype=np.float32)).float(),
-                "min": torch.from_numpy(np.array(minv, dtype=np.float32)).float(),
-                "max": torch.from_numpy(np.array(maxv, dtype=np.float32)).float(),
-                "median": torch.from_numpy(np.array(median, dtype=np.float32)).float(),
-                "quantile_1": torch.from_numpy(np.array(q1, dtype=np.float32)).float(),
-                "quantile_99": torch.from_numpy(
-                    np.array(q99, dtype=np.float32)
-                ).float(),
-                "quantile_0_01": torch.from_numpy(
-                    np.array(q0_01, dtype=np.float32)
-                ).float(),
-                "quantile_99_99": torch.from_numpy(
-                    np.array(q99_99, dtype=np.float32)
-                ).float(),
+                name: np.asarray(arr, dtype=np.float32)
+                for name, arr in stats_np.items()
             }
 
-            if benchmark_stats is not None:
-                os.makedirs(
-                    os.path.join(benchmark_dir, str(embodiment), k), exist_ok=True
-                )
-                mean_path = os.path.join(benchmark_dir, str(embodiment), k, "mean.pt")
-                std_path = os.path.join(benchmark_dir, str(embodiment), k, "std.pt")
-                min_path = os.path.join(benchmark_dir, str(embodiment), k, "min.pt")
-                max_path = os.path.join(benchmark_dir, str(embodiment), k, "max.pt")
-                median_path = os.path.join(
-                    benchmark_dir, str(embodiment), k, "median.pt"
-                )
-                quantile_1_path = os.path.join(
-                    benchmark_dir, str(embodiment), k, "quantile_1.pt"
-                )
-                quantile_99_path = os.path.join(
-                    benchmark_dir, str(embodiment), k, "quantile_99.pt"
-                )
-                quantile_0_01_path = os.path.join(
-                    benchmark_dir, str(embodiment), k, "quantile_0_01.pt"
-                )
-                quantile_99_99_path = os.path.join(
-                    benchmark_dir, str(embodiment), k, "quantile_99_99.pt"
-                )
-                torch.save(self.norm_stats[embodiment][k]["mean"], mean_path)
-                torch.save(self.norm_stats[embodiment][k]["std"], std_path)
-                torch.save(self.norm_stats[embodiment][k]["min"], min_path)
-                torch.save(self.norm_stats[embodiment][k]["max"], max_path)
-                torch.save(self.norm_stats[embodiment][k]["median"], median_path)
-                torch.save(
-                    self.norm_stats[embodiment][k]["quantile_1"], quantile_1_path
-                )
-                torch.save(
-                    self.norm_stats[embodiment][k]["quantile_99"], quantile_99_path
-                )
-                torch.save(
-                    self.norm_stats[embodiment][k]["quantile_0_01"],
-                    quantile_0_01_path,
-                )
-                torch.save(
-                    self.norm_stats[embodiment][k]["quantile_99_99"],
-                    quantile_99_99_path,
-                )
-                if benchmark_stats["stats"].get(embodiment, None) is None:
-                    benchmark_stats["stats"][embodiment] = {}
-                if benchmark_stats["stats"][embodiment].get(k, None) is None:
-                    benchmark_stats["stats"][embodiment][k] = {}
-                benchmark_stats["stats"][embodiment][k] = {
-                    "mean": mean_path,
-                    "std": std_path,
-                    "min": min_path,
-                    "max": max_path,
-                    "median": median_path,
-                    "quantile_1": quantile_1_path,
-                    "quantile_99": quantile_99_path,
-                    "quantile_0_01": quantile_0_01_path,
-                    "quantile_99_99": quantile_99_99_path,
-                }
-
             logger.info(
-                f"[NormStats] key={k} samples={X.shape[0]} stat_shape={mean.shape}"
+                f"[NormStats] key={k} samples={X.shape[0]} stat_shape={stats_np['mean'].shape}"
             )
 
-        computing_end_time = time.time()
-        computing_time = computing_end_time - computing_start_time
-        if benchmark_stats is not None:
-            benchmark_stats["computing_time"] = computing_time
-            benchmark_stats["frames"] = n_samples
+        computing_time = time.time() - computing_start_time
+        self._norm_run_metadata = {
+            "loading_time": loading_time,
+            "computing_time": computing_time,
+            "frames": n_samples,
+        }
 
         logger.info(
             f"[NormStats] Finished norm inference, loading_time={loading_time:.2f}s, computing_time={computing_time:.2f}s"
         )
-        if benchmark_stats is not None:
-            with open(benchmark_file, "w") as f:
-                json.dump(benchmark_stats, f, indent=4)
+
+    def _collect_norm_samples(
+        self, loader, norm_keys, embodiment, n_samples: int, batch_size: int, num_workers: int
+    ):
+        collected = {k: [] for k in norm_keys}
+        cur_num_samples = 0
+        logger.info(
+            f"[NormStats] Starting to load data for norm inference with batch_size={batch_size} and num_workers={num_workers}"
+        )
+        with tqdm(total=n_samples, unit="sample") as pbar:
+            for batch in loader:
+                remaining = n_samples - cur_num_samples
+                if remaining <= 0:
+                    break
+
+                batch_len = None
+                for value in batch.values():
+                    if hasattr(value, "shape") and len(value.shape) > 0:
+                        batch_len = int(value.shape[0])
+                        break
+                if batch_len is None:
+                    raise ValueError(
+                        "[NormStats] Could not infer batch size from DataLoader batch"
+                    )
+
+                take = min(remaining, batch_len)
+                for k in norm_keys:
+                    batch_key = self.keyname_to_zarr_key(k, embodiment)
+                    if batch_key is None or batch_key not in batch:
+                        continue
+                    x = batch[batch_key][:take]
+                    if hasattr(x, "detach"):
+                        x = x.detach().cpu().numpy()
+                    collected[k].append(x)
+
+                cur_num_samples += take
+                pbar.update(take)
+        return collected
+
+    @staticmethod
+    def _compute_stats_for_array(X):
+        return {
+            "mean": np.mean(X, axis=0),
+            "std": np.std(X, axis=0),
+            "min": np.min(X, axis=0),
+            "max": np.max(X, axis=0),
+            "median": np.median(X, axis=0),
+            "quantile_1": np.percentile(X, 1, axis=0),
+            "quantile_99": np.percentile(X, 99, axis=0),
+            "quantile_0_01": np.percentile(X, 0.01, axis=0),
+            "quantile_99_99": np.percentile(X, 99.99, axis=0),
+        }
+
+    def cache_stats(self, save_cache_dir: str):
+        """Write ``norm_stats/norm_stats.json`` under ``save_cache_dir`` (stats as nested lists)."""
+        cache_dir = os.path.join(save_cache_dir, "norm_stats")
+        os.makedirs(cache_dir, exist_ok=True)
+        out_path = os.path.join(cache_dir, "norm_stats.json")
+
+        stats_out: dict[str, dict[str, dict[str, list]]] = {}
+        for emb, keys_dict in self.norm_stats.items():
+            emb_key = str(emb)
+            stats_out[emb_key] = {}
+            for key_name, stat_dict in keys_dict.items():
+                stats_out[emb_key][key_name] = {
+                    stat_name: np.asarray(arr).tolist()
+                    for stat_name, arr in stat_dict.items()
+                }
+
+        payload = {
+            "stats": stats_out,
+            "loading_time": None,
+            "computing_time": None,
+            "frames": None,
+        }
+        if self._norm_run_metadata is not None:
+            for k in ("loading_time", "computing_time", "frames"):
+                if k in self._norm_run_metadata:
+                    payload[k] = self._norm_run_metadata[k]
+
+        with open(out_path, "w") as f:
+            json.dump(payload, f, indent=4)
+        logger.info(f"[NormStats] Cached stats to {out_path}")
+
+    def viz_img_key(self):
+        """
+        Get visualization image keys by embodiment.
+        """
+        return self._viz_img_key
 
     def all_keys(self):
         """
         Get all key names.
-
 
         Returns:
             list: Key names (str).
@@ -391,13 +380,11 @@ class DataSchematic(object):
 
     def is_key_with_embodiment(self, key_name, embodiment):
         """
-        Check if a key_name exists with a given embodiment
-
+        Check whether a key exists for a given embodiment.
 
         Args:
-            key_name (str): name of key, e.g. actions_joints
-            embodiment (int): integer id of embodiment
-
+            key_name (str): Name of key, e.g., "actions_joints".
+            embodiment (int): Integer ID of embodiment.
 
         Returns:
             bool: if the key exists.
@@ -410,10 +397,9 @@ class DataSchematic(object):
         """
         Get keys of a specific type.
 
-
         Args:
             key_type (str): Type of keys, e.g., "camera_keys", "proprio_keys", "action_keys", "metadata_keys".
-
+            embodiment (int): Integer ID of embodiment.
 
         Returns:
             list: Key names (str) of the given type.
@@ -423,17 +409,16 @@ class DataSchematic(object):
         ]["key_name"].tolist()
 
     def action_keys(self, embodiment):
+        """Get action keys for a specific embodiment."""
         return self.keys_of_type("action_keys", embodiment)
 
     def key_shape(self, key, embodiment):
         """
         Get the shape of a specific key.
 
-
         Args:
             key (str): Name of the key.
-            embodiment (int): integer id of embodiment
-
+            embodiment (int): Integer ID of embodiment.
 
         Returns:
             tuple or None: Shape as a tuple, or None if not found.
@@ -455,12 +440,10 @@ class DataSchematic(object):
         """
         Normalize data using the stored normalization statistics.
 
-
         Args:
             data (dict): Maps key names to tensors.
                 joint_positions: tensor of shape (B, S, 7)
             embodiment (int): Id of the embodiment.
-
 
         Returns:
             dict: Maps key names to normalized tensors.
@@ -485,17 +468,29 @@ class DataSchematic(object):
 
                 stats = self.norm_stats[embodiment][key]
                 if self.norm_mode == "zscore":
-                    mean = stats["mean"].to(tensor.device)
-                    std = stats["std"].to(tensor.device)
+                    mean = torch.as_tensor(
+                        stats["mean"], device=tensor.device, dtype=torch.float32
+                    )
+                    std = torch.as_tensor(
+                        stats["std"], device=tensor.device, dtype=torch.float32
+                    )
                     norm_data[key] = (tensor - mean) / (std + 1e-6)
                 elif self.norm_mode == "minmax":
-                    min = stats["min"].to(tensor.device)
-                    max = stats["max"].to(tensor.device)
+                    min = torch.as_tensor(
+                        stats["min"], device=tensor.device, dtype=torch.float32
+                    )
+                    max = torch.as_tensor(
+                        stats["max"], device=tensor.device, dtype=torch.float32
+                    )
                     ndata = (tensor - min) / (max - min + 1e-6)
                     norm_data[key] = 2.0 * ndata - 1.0
                 elif self.norm_mode == "quantile":
-                    quantile_1 = stats["quantile_1"].to(tensor.device)
-                    quantile_99 = stats["quantile_99"].to(tensor.device)
+                    quantile_1 = torch.as_tensor(
+                        stats["quantile_1"], device=tensor.device, dtype=torch.float32
+                    )
+                    quantile_99 = torch.as_tensor(
+                        stats["quantile_99"], device=tensor.device, dtype=torch.float32
+                    )
                     ndata = (tensor - quantile_1) / (quantile_99 - quantile_1 + 1e-6)
                     norm_data[key] = 2.0 * ndata - 1.0
                 else:
@@ -508,14 +503,10 @@ class DataSchematic(object):
     def unnormalize_data(self, data, embodiment):
         """
         Unnormalize data using the stored normalization statistics.
-
-
         Args:
             data (dict): Maps key names to tensors.
                 joint_positions: tensor of shape (B, S, 7)
             embodiment (int): Id of the embodiment.
-
-
         Returns:
             dict: Maps key names to denormalized tensors.
         """
@@ -539,20 +530,32 @@ class DataSchematic(object):
 
                 stats = self.norm_stats[embodiment][key]
                 if self.norm_mode == "zscore":
-                    mean = stats["mean"].to(tensor.device)
-                    std = stats["std"].to(tensor.device)
+                    mean = torch.as_tensor(
+                        stats["mean"], device=tensor.device, dtype=torch.float32
+                    )
+                    std = torch.as_tensor(
+                        stats["std"], device=tensor.device, dtype=torch.float32
+                    )
                     denorm_data[key] = tensor * (std + 1e-6) + mean
 
                 elif self.norm_mode == "minmax":
-                    min_val = stats["min"].to(tensor.device)
-                    max_val = stats["max"].to(tensor.device)
+                    min_val = torch.as_tensor(
+                        stats["min"], device=tensor.device, dtype=torch.float32
+                    )
+                    max_val = torch.as_tensor(
+                        stats["max"], device=tensor.device, dtype=torch.float32
+                    )
                     denorm_data[key] = (tensor + 1) * 0.5 * (
                         max_val - min_val + 1e-6
                     ) + min_val
 
                 elif self.norm_mode == "quantile":
-                    quantile_1 = stats["quantile_1"].to(tensor.device)
-                    quantile_99 = stats["quantile_99"].to(tensor.device)
+                    quantile_1 = torch.as_tensor(
+                        stats["quantile_1"], device=tensor.device, dtype=torch.float32
+                    )
+                    quantile_99 = torch.as_tensor(
+                        stats["quantile_99"], device=tensor.device, dtype=torch.float32
+                    )
                     denorm_data[key] = (tensor + 1) * 0.5 * (
                         quantile_99 - quantile_1 + 1e-6
                     ) + quantile_1
@@ -566,6 +569,7 @@ class DataSchematic(object):
 
     @staticmethod
     def _iter_leaf_datasets(ds):
+        """Yield leaf datasets from possibly nested dataset wrappers."""
         if isinstance(ds, ZarrDataset):
             yield ds
         elif isinstance(ds, MultiDataset):
@@ -576,6 +580,7 @@ class DataSchematic(object):
 
     @staticmethod
     def _key_map_for_any(ds) -> dict:
+        """Return the key map for a dataset-like object."""
         km = getattr(ds, "key_map", None)
         return km
 
@@ -586,6 +591,18 @@ class DataSchematic(object):
         extra_keys=(),
         include_all_key_map_keys=False,
     ) -> list[str]:
+        """
+        Collect raw key names to use for normalization.
+
+        Args:
+            ds: Dataset or nested dataset wrapper.
+            key_types (tuple): Key types to include from each key map.
+            extra_keys (tuple): Additional keys to include explicitly.
+            include_all_key_map_keys (bool): If True, include all keys in key maps.
+
+        Returns:
+            list[str]: Sorted unique key names.
+        """
         out = set(extra_keys)
         for leaf in DataSchematic._iter_leaf_datasets(ds):
             km = DataSchematic._key_map_for_any(leaf)
