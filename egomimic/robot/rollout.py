@@ -31,8 +31,6 @@ import sys
 import termios
 import tty
 
-from robot_interface import ARXInterface
-
 
 def visualize_actions(ims, actions, extrinsics, intrinsics, arm="both"):
     if actions.shape[-1] == 7 or actions.shape[-1] == 14:
@@ -161,6 +159,30 @@ EMBODIMENT_MAP = {
 }
 
 TEMP_DIR = "/home/robot/temp_dir"
+
+
+def _build_robot_interface(arms_list, offline_debug=False, offline_episode_path=None):
+    if offline_debug:
+        from robot_interface import OfflineARXInterface
+
+        return OfflineARXInterface(arms=arms_list, dataset_path=offline_episode_path)
+
+    from robot_interface import ARXInterface
+
+    return ARXInterface(arms=arms_list)
+
+
+def _get_model_xml_path():
+    candidates = [
+        "/home/robot/robot_ws/egomimic/resources/model_x5.xml",
+        os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "resources", "model_x5.xml")
+        ),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[-1]
 
 
 class _KeyPoll:
@@ -351,7 +373,12 @@ class PolicyRollout(Rollout):
         front = front.permute(0, 3, 1, 2).to(self.device, dtype=torch.float32) / 255.0
 
         data = {
+            # Keep rollout-local keys, PI schematic aliases, and canonical
+            # dataset zarr keys so checkpoints with different data schematics
+            # can all resolve the same image tensor.
             "front_img_1": front.squeeze(),
+            "base_0_rgb": front.squeeze(),
+            "observations.images.front_img_1": front.squeeze(),
             "pad_mask": torch.ones((1, 100, 1), device=self.device, dtype=torch.bool),
         }
 
@@ -366,6 +393,8 @@ class PolicyRollout(Rollout):
                 right.permute(0, 3, 1, 2).to(self.device, dtype=torch.float32) / 255.0
             )
             data["right_wrist_img"] = right.squeeze()
+            data["right_wrist_0_rgb"] = right.squeeze()
+            data["observations.images.right_wrist_img"] = right.squeeze()
             right_ee_pose = eepose[7:13]
             right_ee_pose = ee_pose_to_rot_ee_frame(right_ee_pose)
             right_ypr = right_ee_pose[..., 3:6]
@@ -387,6 +416,8 @@ class PolicyRollout(Rollout):
             left = left[..., [2, 1, 0]]  # BGR -> RGB
             left = left.permute(0, 3, 1, 2).to(self.device, dtype=torch.float32) / 255.0
             data["left_wrist_img"] = left.squeeze()
+            data["left_wrist_0_rgb"] = left.squeeze()
+            data["observations.images.left_wrist_img"] = left.squeeze()
             left_ee_pose = eepose[0:6]
             left_ee_pose = ee_pose_to_rot_ee_frame(left_ee_pose)
             left_ypr = left_ee_pose[..., 3:6]
@@ -500,6 +531,8 @@ def main(
     dataset_path=None,
     debug=False,
     resampled_action_len=None,
+    offline_debug=False,
+    offline_episode_path=None,
 ):
     if arms == "both":
         arms_list = ["right", "left"]
@@ -508,7 +541,18 @@ def main(
     else:
         arms_list = ["left"]
 
-    ri = ARXInterface(arms=arms_list)
+    if offline_episode_path is not None and not offline_debug:
+        raise ValueError("--offline-episode-path requires --offline-debug.")
+    if policy_path is not None and offline_debug and offline_episode_path is None:
+        raise ValueError(
+            "--policy-path requires --offline-episode-path in --offline-debug mode."
+        )
+
+    ri = _build_robot_interface(
+        arms_list=arms_list,
+        offline_debug=offline_debug,
+        offline_episode_path=offline_episode_path,
+    )
 
     if policy_path is not None:
         rollout_type = "policy"
@@ -534,9 +578,7 @@ def main(
     camera_transforms = CameraTransforms(
         intrinsics_key="base", extrinsics_key="x5Dec13_2"
     )
-    kinematics_solver = EvaMinkKinematicsSolver(
-        model_path="/home/robot/robot_ws/egomimic/resources/model_x5.xml"
-    )
+    kinematics_solver = EvaMinkKinematicsSolver(model_path=_get_model_xml_path())
 
     try:
         with _KeyPoll() as kp:
@@ -605,10 +647,10 @@ def main(
         return
 
 
-if __name__ == "__main__":
+def build_arg_parser(description="Rollout robot model."):
     import argparse
 
-    parser = argparse.ArgumentParser(description="Rollout robot model.")
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "--arms",
         type=str,
@@ -631,28 +673,37 @@ if __name__ == "__main__":
     parser.add_argument("--policy-path", type=str, help="policy checkpoint path")
     parser.add_argument("--dataset-path", type=str, help="dataset path for replay")
     parser.add_argument(
+        "--offline-debug",
+        action="store_true",
+        help="use the offline dummy robot interface for rollout debugging",
+    )
+    parser.add_argument(
+        "--offline-episode-path",
+        type=str,
+        help="local EVA Zarr episode path used as observation source in offline debug mode",
+    )
+    parser.add_argument(
         "--cartesian",
         action="store_true",
         help="control in cartesian space instead of joint space",
     )
-
     parser.add_argument(
         "--resampled-action-len",
         type=int,
         default=DEFAULT_RESAMPLE_LENGTH,
         help="Resample each predicted action chunk to this length (e.g., 100 -> 45). Euler if --cartesian.",
     )
-
     parser.add_argument(
         "--debug",
         action="store_true",
         help="enable debug visualization of actions on images",
     )
+    return parser
 
-    args = parser.parse_args()
 
+def run_from_args(args):
     print(f"Resampling actions to {args.resampled_action_len}")
-    main(
+    return main(
         arms=args.arms,
         frequency=args.frequency,
         query_frequency=args.query_frequency,
@@ -661,4 +712,12 @@ if __name__ == "__main__":
         cartesian=args.cartesian,
         debug=args.debug,
         resampled_action_len=args.resampled_action_len,
+        offline_debug=args.offline_debug,
+        offline_episode_path=args.offline_episode_path,
     )
+
+
+if __name__ == "__main__":
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    run_from_args(args)

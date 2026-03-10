@@ -171,6 +171,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     model: LightningModule = ModelWrapper(
         config_tree=_build_model_config_tree(cfg),
         data_schematic_state=data_schematic.to_state(),
+        viz_func=viz_func_dict,
     )
 
     _log_dataset_frame_counts(train_datasets, valid_datasets)

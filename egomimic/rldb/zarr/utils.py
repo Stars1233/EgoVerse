@@ -62,7 +62,6 @@ class DataSchematic(object):
 
         rows = []
         self.schematic_dict = copy.deepcopy(schematic_dict)
-        self._viz_img_key_config = copy.deepcopy(viz_img_key)
         self.embodiments = set()
 
         for embodiment, schematic in schematic_dict.items():
@@ -102,7 +101,6 @@ class DataSchematic(object):
     def to_state(self):
         return {
             "schematic_dict": copy.deepcopy(self.schematic_dict),
-            "viz_img_key": copy.deepcopy(self._viz_img_key_config),
             "norm_mode": self.norm_mode,
             "df_records": copy.deepcopy(self.df.to_dict("records")),
             "shapes_infered": self.shapes_infered,
@@ -116,7 +114,6 @@ class DataSchematic(object):
 
         schematic = cls(
             schematic_dict=copy.deepcopy(state["schematic_dict"]),
-            viz_img_key=copy.deepcopy(state["viz_img_key"]),
             norm_mode=state.get("norm_mode", "zscore"),
         )
         if "df_records" in state:

@@ -34,9 +34,7 @@ class EMBODIMENT(Enum):
     SCALE_LEFT_ARM = 14
 
 
-EMBODIMENT_ID_TO_KEY = {
-    member.value: key for key, member in EMBODIMENT.__members__.items()
-}
+EMBODIMENT_ID_TO_KEY = {member.value: member.name for member in EMBODIMENT}
 
 
 def get_embodiment(index):

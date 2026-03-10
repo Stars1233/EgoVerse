@@ -36,16 +36,19 @@ class ModelWrapper(LightningModule):
         data_schematic_state=None,
         scheduler_interval="epoch",
         scheduler_frequency: int = 1,
+        viz_func=None,
     ):
         """
         Args:
             model (PolicyAlgo): robomimic model to wrap.
         """
         super().__init__()
-        self.save_hyperparameters(ignore=["robomimic_model"])
+        self.save_hyperparameters(ignore=["robomimic_model", "viz_func"])
 
         if config_tree is not None:
-            self.model = self._instantiate_model(config_tree, data_schematic_state)
+            self.model = self._instantiate_model(
+                config_tree, data_schematic_state, viz_func
+            )
         elif robomimic_model is not None:  # legacy support
             self.model = robomimic_model
         else:
@@ -73,12 +76,13 @@ class ModelWrapper(LightningModule):
             return cfg
         return OmegaConf.create(cfg)
 
-    def _instantiate_model(self, config_tree, data_schematic_state):
+    def _instantiate_model(self, config_tree, data_schematic_state, viz_func=None):
         cfg = self._as_config(config_tree)
         data_schematic = DataSchematic.from_state(data_schematic_state)
         return hydra.utils.instantiate(
             cfg.model.robomimic_model,
             data_schematic=data_schematic,
+            viz_func=viz_func,
         )
 
     def root_dir(self):
