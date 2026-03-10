@@ -48,23 +48,17 @@ def _log_dataset_frame_counts(train_datasets: dict, valid_datasets: dict) -> Non
     log.info("Dataset frame counts:\n" + table)
 
 
-def _propagate_data_schematic_to_datasets(
-    data_schematic, train_datasets, valid_datasets
-):
+def _propagate_data_schematic_to_datasets(data_schematic, datasets):
     """
     Set the shared data schematic on all top-level datasets.
     """
-    for split_name, split_datasets in [
-        ("train", train_datasets),
-        ("valid", valid_datasets),
-    ]:
-        for dataset_name, dataset in split_datasets.items():
-            if not isinstance(dataset, MultiDataset):
-                raise ValueError(
-                    f"{dataset_name} is not a MultiDataset. All top level datasets in data config should be MultiDataset"
-                )
-            log.info(f"Passing data_schematic to {split_name} dataset <{dataset_name}>")
-            dataset.set_data_schematic(data_schematic)
+    split_datasets = datasets
+    for dataset_name, dataset in split_datasets.items():
+        if not isinstance(dataset, MultiDataset):
+            raise ValueError(
+                f"{dataset_name} is not a MultiDataset. All top level datasets in data config should be MultiDataset"
+            )
+        dataset.set_data_schematic(data_schematic)
 
 
 @task_wrapper
@@ -150,7 +144,6 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         _propagate_data_schematic_to_datasets(
             data_schematic,
             train_datasets,
-            valid_datasets,
         )
     viz_func = cfg.visualization
     viz_func_dict = {}

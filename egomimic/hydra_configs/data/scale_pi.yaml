@@ -5,40 +5,34 @@ train_datasets:
     _target_: egomimic.rldb.zarr.zarr_dataset_multi.MultiDataset._from_resolver
     resolver:
       _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3EpisodeResolver
-      folder_path: /coc/flash7/scratch/egoverseDebugDatasets/egoverseS3DatasetTest/
+      folder_path: /coc/flash7/scratch/egoverseS3ZarrDataset/scale
       key_map:
         _target_: egomimic.rldb.embodiment.human.Scale.get_keymap
-        mode: cartesian
       transform_list:
         _target_: egomimic.rldb.embodiment.human.Scale.get_transform_list
-        mode: cartesian
     filters:
-      _target_: egomimic.rldb.filters.DatasetFilter
       filter_lambdas:
-        - "lambda row: row['episode_hash'] in {'2026-03-16-01-22-26-448000'}"
-    mode: total
+        - "lambda row: ((row['task'] == 'Folding Clothes') | (row['task'] == '[flagship] Folding Clothes')) & (row['lab'] == 'scale') & (row['robot_name'] == 'scale_bimanual') & (row['is_deleted'] == false)"
+    mode: train
 valid_datasets:
   scale_bimanual:
     _target_: egomimic.rldb.zarr.zarr_dataset_multi.MultiDataset._from_resolver
     resolver:
       _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3EpisodeResolver
-      folder_path: /coc/flash7/scratch/egoverseDebugDatasets/egoverseS3DatasetTest/
+      folder_path: /coc/flash7/scratch/egoverseS3ZarrDataset/scale
       key_map:
         _target_: egomimic.rldb.embodiment.human.Scale.get_keymap
-        mode: cartesian
       transform_list:
         _target_: egomimic.rldb.embodiment.human.Scale.get_transform_list
-        mode: cartesian
     filters:
-      _target_: egomimic.rldb.filters.DatasetFilter
-      filter_lambdas:
-        - "lambda row: row['episode_hash'] in {'2026-03-16-01-22-26-448000'}"
-    mode: total
+      task:
+        - "lambda row: ((row['task'] == 'Folding Clothes') | (row['task'] == '[flagship] Folding Clothes')) & (row['lab'] == 'scale') & (row['robot_name'] == 'scale_bimanual') & (row['is_deleted'] == false)"
+    mode: valid
 train_dataloader_params:
   scale_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 10
 valid_dataloader_params:
   scale_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 10

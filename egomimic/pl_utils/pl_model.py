@@ -24,7 +24,14 @@ class ModelWrapper(LightningModule):
     grad_norm_mad_min_count = 100
     grad_norm_mad_window = 200
 
-    def __init__(self, robomimic_model, optimizer, scheduler):
+    def __init__(
+        self,
+        robomimic_model,
+        optimizer,
+        scheduler,
+        scheduler_interval: str = "epoch",
+        scheduler_frequency: int = 1,
+    ):
         """
         Args:
             model (PolicyAlgo): robomimic model to wrap.
@@ -238,13 +245,11 @@ class ModelWrapper(LightningModule):
             scheduler = self.hparams.scheduler(optimizer=optimizer)
             return {
                 "optimizer": optimizer,
-                "lr_scheduler": scheduler,
-                # "lr_scheduler": {
-                #     "scheduler": scheduler,
-                #     "monitor": "val/loss",
-                #     "interval": "epoch",
-                #     "frequency": 1,
-                # },
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": self.hparams.scheduler_interval,
+                    "frequency": self.hparams.scheduler_frequency,
+                },
             }
         return {"optimizer": optimizer}
 

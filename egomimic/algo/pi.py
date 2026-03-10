@@ -2,7 +2,6 @@ import logging
 import os
 from collections import OrderedDict
 
-import numpy as np
 import openpi
 import openpi.models.pi0_config
 import openpi.models_pytorch.pi0_pytorch
@@ -23,11 +22,6 @@ from egomimic.models.preprocess_pi_obs import (
 )
 from egomimic.rldb.embodiment.embodiment import get_embodiment, get_embodiment_id
 from egomimic.utils.action_utils import ConverterRegistry
-from egomimic.utils.egomimicUtils import (
-    draw_actions,
-    draw_annotation_text,
-    draw_rotation_text,
-)
 
 logger = logging.getLogger(__name__)
 # Ensure logger propagates to root logger and has appropriate level
@@ -56,6 +50,7 @@ class PI(Algo):
         # ---------------------------
         ac_keys,
         action_converters,
+        viz_func,
         **kwargs,
     ):
         self.nets = nn.ModuleDict()
@@ -81,24 +76,26 @@ class PI(Algo):
         self.proprio_keys = {}
         self.lang_keys = {}
 
+        self.viz_func = viz_func
+
         for embodiment in self.domains:
             embodiment_id = get_embodiment_id(embodiment)
             self.camera_keys[embodiment_id] = []
             self.proprio_keys[embodiment_id] = []
             self.lang_keys[embodiment_id] = []
-            for key in data_schematic.keys_of_type("action_keys"):
+            for key in data_schematic.keys_of_type("action_keys", embodiment_id):
                 if (
                     data_schematic.is_key_with_embodiment(key, embodiment_id)
                     and key == self.ac_keys[embodiment]
                 ):
                     self.ac_keys[embodiment_id] = key
-            for key in data_schematic.keys_of_type("camera_keys"):
+            for key in data_schematic.keys_of_type("camera_keys", embodiment_id):
                 if data_schematic.is_key_with_embodiment(key, embodiment_id):
                     self.camera_keys[embodiment_id].append(key)
-            for key in data_schematic.keys_of_type("proprio_keys"):
+            for key in data_schematic.keys_of_type("proprio_keys", embodiment_id):
                 if data_schematic.is_key_with_embodiment(key, embodiment_id):
                     self.proprio_keys[embodiment_id].append(key)
-            for key in data_schematic.keys_of_type("lang_keys"):
+            for key in data_schematic.keys_of_type("lang_keys", embodiment_id):
                 if data_schematic.is_key_with_embodiment(key, embodiment_id):
                     self.lang_keys[embodiment_id].append(key)
 
@@ -165,12 +162,11 @@ class PI(Algo):
         """
         processed_batch = {}
 
-        for embodiment_id, _batch in batch.items():
+        for embodiment_name, _batch in batch.items():
+            embodiment_id = get_embodiment_id(embodiment_name)
             processed_batch[embodiment_id] = {}
             for key, value in _batch.items():
-                key_name = self.data_schematic.lerobot_key_to_keyname(
-                    key, embodiment_id
-                )
+                key_name = self.data_schematic.zarr_key_to_keyname(key, embodiment_id)
                 if key_name is not None:
                     processed_batch[embodiment_id][key_name] = value
 
@@ -196,6 +192,13 @@ class PI(Algo):
             processed_batch[embodiment_id] = self.data_schematic.normalize_data(
                 processed_batch[embodiment_id], embodiment_id
             )
+            processed_batch[embodiment_id]["embodiment"] = torch.tensor(
+                [embodiment_id], device=device, dtype=torch.int64
+            )
+
+            for key, value in processed_batch[embodiment_id].items():
+                if isinstance(value, torch.Tensor) and value.dtype == torch.float64:
+                    processed_batch[embodiment_id][key] = value.float()
 
         if not processed_batch:
             raise ValueError(
@@ -340,68 +343,12 @@ class PI(Algo):
         Returns:
             ims (np.ndarray): (B, H, W, 3) - images with actions drawn on top
         """
+        if self.viz_func is None:
+            raise ValueError("viz_func is not set")
         embodiment_id = batch["embodiment"][0].item()
         embodiment_name = get_embodiment(embodiment_id).lower()
-        ac_key = self.ac_keys[embodiment_id]
 
-        viz_img_key = self.data_schematic.viz_img_key()[embodiment_id]
-        ims = (batch[viz_img_key].cpu().numpy().transpose((0, 2, 3, 1)) * 255).astype(
-            np.uint8
-        )
-
-        for key in batch:
-            if f"{embodiment_name}_{key}" in predictions:
-                preds = predictions[f"{embodiment_name}_{key}"]
-                gt = batch[key]
-
-                if self.is_6dof and ac_key == "actions_cartesian":
-                    gt, gt_rot = self._extract_xyz(gt)
-                    preds, preds_rot = self._extract_xyz(preds)
-
-                for b in range(ims.shape[0]):
-                    if preds.shape[-1] == 7 or preds.shape[-1] == 14:
-                        ac_type = "joints"
-                    elif preds.shape[-1] == 3 or preds.shape[-1] == 6:
-                        ac_type = "xyz"
-                    else:
-                        raise ValueError(
-                            f"Unknown action type with shape {preds.shape}"
-                        )
-
-                    arm = (
-                        "right"
-                        if preds.shape[-1] == 7 or preds.shape[-1] == 3
-                        else "both"
-                    )
-                    ims[b] = draw_actions(
-                        ims[b],
-                        ac_type,
-                        "Purples",
-                        preds[b].cpu().numpy(),
-                        self.camera_transforms.extrinsics,
-                        self.camera_transforms.intrinsics,
-                        arm=arm,
-                    )
-                    ims[b] = draw_actions(
-                        ims[b],
-                        ac_type,
-                        "Greens",
-                        gt[b].cpu().numpy(),
-                        self.camera_transforms.extrinsics,
-                        self.camera_transforms.intrinsics,
-                        arm=arm,
-                    )
-
-                    if self.is_6dof and ac_key == "actions_cartesian":
-                        ims[b] = draw_rotation_text(
-                            ims[b], gt_rot[b][0], preds_rot[b][0], position=(340, 20)
-                        )
-
-                    if "annotations" in batch:
-                        annotation = batch["annotations"][b]
-                        ims[b] = draw_annotation_text(ims[b], annotation)
-
-        return ims
+        return self.viz_func[embodiment_name](predictions, batch)
 
     @override
     def compute_losses(self, predictions, batch):
