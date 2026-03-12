@@ -846,7 +846,7 @@ def collect_demo(
                             collecting_data = False
                             pbar.close()
                             pbar = None
-                            save_demo(demo_data, demo_dir, episode_id, camera_names)
+                            save_demo(demo_data, demo_dir, episode_id, robot_interface.camera_res)
                             print("Episode length reached, stopping recording.")
                             print("Saving DEMO ------------------------------")
                             if auto_episode_id is not None:
