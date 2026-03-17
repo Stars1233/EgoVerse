@@ -241,10 +241,14 @@ Example:
 python trainHydra.py   --config-name=train_zarr   --data=aria   train.batch_size=64   train.num_workers=8
 ```
 
+
+# Norm Stats
+By default in `train_zarr.yaml` norm stats are computed over the whole dataset.  Decrease `norm_stat_fraction` in `train_zarr.yaml` when training on large datasets.
+
 ------------------------------------------------------------------------
 
 # Tips
 
 -   Always verify `folder_path` exists and has enough disk space.\
 -   Large datasets will auto-download from S3 if not present locally.\
--   For debugging small runs, filter by a single `episode_hash`.  You can also set --logger=debug --trainer=debug to run fewer epochs.
+-   For debugging small runs, filter by a single `episode_hash`.  You can also set logger=debug trainer=debug to run fewer epochs.
