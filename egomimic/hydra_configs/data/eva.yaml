@@ -9,6 +9,7 @@ train_datasets:
         _target_: egomimic.rldb.embodiment.eva.Eva.get_keymap
       transform_list:
         _target_: egomimic.rldb.embodiment.eva.Eva.get_transform_list
+        mode: cartesian
     filters:
       _target_: egomimic.rldb.filters.DatasetFilter
       filter_lambdas:
@@ -25,6 +26,7 @@ valid_datasets:
         _target_: egomimic.rldb.embodiment.eva.Eva.get_keymap
       transform_list:
         _target_: egomimic.rldb.embodiment.eva.Eva.get_transform_list
+        mode: cartesian
     filters:
       _target_: egomimic.rldb.filters.DatasetFilter
       filter_lambdas:
