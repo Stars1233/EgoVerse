@@ -51,7 +51,8 @@ Download the AWS cli
 Set up your AWS keys to access our cloud storage
 ```
 aws configure
-<enter your keys here>
+AccessKeyId: AKIAYDKH4BNCAYHE5NG2
+SecretAccessKey: rGjT6NSh55YiB9MC9EyNGpVy8qcaTn4i19OmkhRW
 Default region name: us-east-2
 Default output format:
 ./egomimic/utils/aws/setup_secret.sh
