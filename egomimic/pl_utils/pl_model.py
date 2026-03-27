@@ -11,7 +11,6 @@ from lightning import LightningModule
 import egomimic.utils.tensor_utils as TensorUtils
 from egomimic.rldb.embodiment.embodiment import get_embodiment
 
-
 class ModelWrapper(LightningModule):
     """
     Wrapper class around robomimic models to ensure compatibility with Pytorch Lightning.
@@ -78,7 +77,7 @@ class ModelWrapper(LightningModule):
                 print(
                     "[LOSS_SPIKE] "
                     f"step={self.global_step} "
-                    f"factor={self.debug_loss_spike_factor}",
+                    f"factor={self.debug_loss_spike_factor} "
                     flush=True,
                 )
 
@@ -95,6 +94,7 @@ class ModelWrapper(LightningModule):
         )
         grad_norm_val = float(grad_norm)
         info = {"policy_grad_norms_raw": grad_norm_val}
+        grad_norm_flagged = False
 
         if len(self.grad_norm_history) >= self.grad_norm_mad_min_count:
             values = np.array(self.grad_norm_history, dtype=np.float32)
@@ -103,8 +103,9 @@ class ModelWrapper(LightningModule):
             if mad > 0.0:
                 threshold = median + self.grad_norm_mad_scale * mad
                 info["policy_grad_norms_mad_threshold"] = threshold
-                info["policy_grad_norms_mad_flag"] = float(grad_norm_val > threshold)
-                if grad_norm_val > threshold:
+                grad_norm_flagged = grad_norm_val > threshold
+                info["policy_grad_norms_mad_flag"] = float(grad_norm_flagged)
+                if grad_norm_flagged:
                     torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=median)
                     if self.trainer.is_global_zero:
                         print(
@@ -117,7 +118,8 @@ class ModelWrapper(LightningModule):
                             flush=True,
                         )
 
-        self.grad_norm_history.append(grad_norm_val)
+        if not grad_norm_flagged:
+            self.grad_norm_history.append(grad_norm_val)
         for k, v in info.items():
             self.log("Train/" + k, v, on_step=False, on_epoch=True, sync_dist=True)
 
@@ -146,9 +148,11 @@ class ModelWrapper(LightningModule):
         """
         Run a validation step on the batch, and save that batch of images into the val_image_buffer.  Once the buffer hits 1000 images, save that as a 30fps video using torchvision.io.write_video.
         """
-        print(f"[VAL_STEP] rank={self.global_rank}, batch_idx={batch_idx}", flush=True)
-
         batch = self.model.process_batch_for_training(batch)
+        print(
+            f"[VAL_STEP] rank={self.global_rank}, batch_idx={batch_idx}",
+            flush=True,
+        )
         metrics, images_dict = self.model.forward_eval_logging(batch)
 
         metrics = {
