@@ -16,6 +16,8 @@ from cloudpathlib import S3Path
 from egomimic.scripts.aria_process.aria_to_zarr import main as aria_main
 from egomimic.scripts.eva_process.eva_to_zarr import main as eva_main
 from egomimic.utils.aws.aws_data_utils import (
+    delete_s3_key_if_exists,
+    delete_s3_prefix,
     get_boto3_s3_client,
     get_cloudpathlib_s3_client,
     s3_sync_to_local,
@@ -52,6 +54,41 @@ def _parse_s3_uri(uri: str, *, default_bucket: str | None = None) -> tuple[str, 
             f"Expected s3://... but got '{uri}' and no default_bucket provided"
         )
     return default_bucket, uri.strip("/")
+
+
+def _cleanup_existing_processed_outputs(
+    *,
+    bucket: str,
+    zarr_prefix: str,
+    mp4_key: str | None,
+) -> None:
+    deleted_zarr_objects = delete_s3_prefix(bucket, zarr_prefix)
+    if deleted_zarr_objects > 0:
+        print(
+            f"[CLEANUP] Deleted existing remote zarr prefix s3://{bucket}/{zarr_prefix} "
+            f"({deleted_zarr_objects} objects)",
+            flush=True,
+        )
+    else:
+        print(
+            f"[CLEANUP] No existing remote zarr objects at s3://{bucket}/{zarr_prefix}",
+            flush=True,
+        )
+
+    if mp4_key:
+        deleted_mp4 = delete_s3_key_if_exists(bucket, mp4_key)
+        if deleted_mp4:
+            print(
+                f"[CLEANUP] Deleted existing remote mp4 s3://{bucket}/{mp4_key}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[CLEANUP] No existing remote mp4 at s3://{bucket}/{mp4_key}",
+                flush=True,
+            )
+
+    print("[CLEANUP] Remote cleanup complete; continuing upload", flush=True)
 
 
 class _Tee:
@@ -187,7 +224,17 @@ class AriaRay(EmbodimentRay):
 
         # Match original ordering: sort by vrs filename
         for filename in sorted(vrs_by_name, key=lambda n: vrs_by_name[n].name):
-            if filename in has_json and filename in has_hand and filename in has_slam:
+            missing = []
+            if filename not in has_json:
+                missing.append("json")
+            if filename not in has_hand:
+                missing.append("hand_tracking")
+            if filename not in has_slam:
+                missing.append("slam")
+            if missing:
+                print(f"[MISSING] {filename}: has VRS but MISSING {missing}", flush=True)
+                continue
+            if True:
                 vrs = vrs_by_name[filename]
                 jsonf = root / f"{filename}.json"
                 mps_dir = root / f"mps_{filename}_vrs"
@@ -343,6 +390,18 @@ class AriaRay(EmbodimentRay):
                         ds_s3_prefix = (
                             f"{out_prefix.rstrip('/')}/{zarr_filename}.zarr".strip("/")
                         )
+                        mp4_s3_key = None
+                        if mp4_path:
+                            mp4_s3_key = (
+                                f"{out_prefix.rstrip('/')}/{Path(mp4_path).name}".strip(
+                                    "/"
+                                )
+                            )
+                        _cleanup_existing_processed_outputs(
+                            bucket=out_bucket,
+                            zarr_prefix=ds_s3_prefix,
+                            mp4_key=mp4_s3_key,
+                        )
                         upload_dir_to_s3(
                             str(zarr_store_path), out_bucket, prefix=ds_s3_prefix
                         )
@@ -352,9 +411,6 @@ class AriaRay(EmbodimentRay):
                             flush=True,
                         )
                         if mp4_path:
-                            mp4_s3_key = (
-                                f"{out_prefix.rstrip('/')}/{Path(mp4_path).name}"
-                            )
                             boto3_client.upload_file(
                                 str(mp4_path), out_bucket, mp4_s3_key
                             )
@@ -563,6 +619,18 @@ class EvaRay(EmbodimentRay):
                         zarr_s3_key = (
                             f"{out_prefix.rstrip('/')}/{zarr_filename}.zarr".strip("/")
                         )
+                        mp4_s3_key = None
+                        if mp4_path:
+                            mp4_s3_key = (
+                                f"{out_prefix.rstrip('/')}/{Path(mp4_path).name}".strip(
+                                    "/"
+                                )
+                            )
+                        _cleanup_existing_processed_outputs(
+                            bucket=out_bucket,
+                            zarr_prefix=zarr_s3_key,
+                            mp4_key=mp4_s3_key,
+                        )
                         upload_dir_to_s3(
                             str(zarr_store_path), out_bucket, prefix=zarr_s3_key
                         )
@@ -572,9 +640,6 @@ class EvaRay(EmbodimentRay):
                             flush=True,
                         )
                         if mp4_path:
-                            mp4_s3_key = (
-                                f"{out_prefix.rstrip('/')}/{Path(mp4_path).name}"
-                            )
                             s3_client.upload_file(str(mp4_path), out_bucket, mp4_s3_key)
                             Path(mp4_path).unlink(missing_ok=True)
                             print(
