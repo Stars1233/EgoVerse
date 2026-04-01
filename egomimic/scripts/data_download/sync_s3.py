@@ -1,35 +1,9 @@
 """
 Sync EgoVerse data from S3/R2 to a local directory.
 
-## Filters (how to choose what downloads)
-
-This script uses **named filter presets** (see `DEFAULT_FILTERS` below).
-
-- Use `--filters <key>` to select a preset.
-- If you omit `--filters`, it defaults to `all` (downloads everything, excluding rows
-  marked `is_deleted=True` in the episode table).
-
-To add your own preset, edit `DEFAULT_FILTERS` and add a new key:
-
-    "my-filter-name": DatasetFilter(
-        filter_lambdas=[
-            "lambda row: row.get('embodiment') == 'aria'",
-            "lambda row: row.get('task') == 'fold_clothes'",
-            # Any boolean expression on row[...] / row.get(...):
-        ]
-    )
-
-Each lambda gets one `row` (a dict-like record from the episodes SQL table) and must
-return a **bool**. Missing keys should be accessed via `row.get(...)` to avoid crashes.
-
-## Examples
-
-- Download everything:
-    python egomimic/scripts/data_download/sync_s3.py --local-dir /where you want to download the data to
-
-- Download only Aria fold clothes:
-    python egomimic/scripts/data_download/sync_s3.py --local-dir /where you want to download the data to \
-        --filters aria-fold-clothes --workers 128
+Example:
+    python egomimic/scripts/data_download/sync_s3.py --local-dir /tmp/egoverse \
+        --filters aria-fold-clothes
 """
 
 import argparse
@@ -47,7 +21,6 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 DEFAULT_FILTERS = {
-    "all": DatasetFilter(),
     "aria-fold-clothes": DatasetFilter(
         filter_lambdas=[
             "lambda row: row.get('embodiment') == 'aria'",
@@ -88,7 +61,7 @@ def main():
     parser.add_argument(
         "--filters",
         type=str,
-        default="all",
+        required=True,
         help=(
             "Named DatasetFilter preset key. "
             f"Available keys: {', '.join(sorted(DEFAULT_FILTERS))}"
