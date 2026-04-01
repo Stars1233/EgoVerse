@@ -23,17 +23,9 @@ from egomimic.utils.egomimicUtils import (
 from egomimic.utils.pose_utils import (
     _matrix_to_xyzwxyz,
 )
-from egomimic.utils.type_utils import _to_numpy
-from egomimic.utils.viz_utils import (
-    _viz_axes,
-    _viz_traj,
-)
 
 
 class Eva(Embodiment):
-    VIZ_INTRINSICS_KEY = "base"
-    VIZ_IMAGE_KEY = "observations.images.front_img_1"
-
     @staticmethod
     def get_transform_list(
         mode: Literal[
@@ -46,62 +38,6 @@ class Eva(Embodiment):
             return _build_eva_bimanual_eef_frame_transform_list(is_quat=False)
         elif mode == "cartesian_wristframe_quat":
             return _build_eva_bimanual_eef_frame_transform_list(is_quat=True)
-
-    @classmethod
-    def viz_transformed_batch(
-        cls,
-        batch,
-        mode=Literal["traj", "axes"],
-        action_key="actions_cartesian",
-        image_key=None,
-        transform_list=None,
-        **kwargs,
-    ):
-        if transform_list is not None:
-            batch = cls.apply_transform(batch, transform_list)
-        image_key = image_key or cls.VIZ_IMAGE_KEY
-        action_key = action_key or "actions_cartesian"
-        intrinsics_key = cls.VIZ_INTRINSICS_KEY
-        mode = (mode or "traj").lower()
-
-        images = _to_numpy(batch[image_key][0])
-        actions = _to_numpy(batch[action_key][0])
-
-        return cls.viz(
-            images=images,
-            actions=actions,
-            mode=mode,
-            intrinsics_key=intrinsics_key,
-            **kwargs,
-        )
-
-    @classmethod
-    def viz(
-        cls,
-        images,
-        actions,
-        mode=Literal["traj", "axes"],
-        intrinsics_key=None,
-        **kwargs,
-    ):
-        intrinsics_key = intrinsics_key or cls.VIZ_INTRINSICS_KEY
-        if mode == "traj":
-            return _viz_traj(
-                images=images,
-                actions=actions,
-                intrinsics_key=intrinsics_key,
-                **kwargs,
-            )
-        if mode == "axes":
-            return _viz_axes(
-                images=images,
-                actions=actions,
-                intrinsics_key=intrinsics_key,
-                **kwargs,
-            )
-        raise ValueError(
-            f"Unsupported mode '{mode}'. Expected one of: " f"('traj', 'axes')."
-        )
 
     @classmethod
     def get_keymap(cls):

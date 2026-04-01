@@ -8,6 +8,7 @@ import torch
 
 from egomimic.rldb.zarr.action_chunk_transforms import Transform
 from egomimic.utils.type_utils import _to_numpy
+from egomimic.utils.viz_utils import _viz_annotations, _viz_axes, _viz_traj
 
 
 class EMBODIMENT(Enum):
@@ -45,15 +46,80 @@ def get_embodiment_id(embodiment_name):
 class Embodiment(ABC):
     """Base embodiment class. An embodiment is responsible for defining the transform pipeline that converts between the raw data in the dataset and the canonical representation used by the model."""
 
+    VIZ_INTRINSICS_KEY = "base"
+    VIZ_IMAGE_KEY = "observations.images.front_img_1"
+
     @staticmethod
     def get_transform_list() -> list[Transform]:
         """Returns the list of transforms that convert between the raw data in the dataset and the canonical representation used by the model."""
         raise NotImplementedError
 
-    @staticmethod
-    def viz_transformed_batch(batch):
+    @classmethod
+    def viz_transformed_batch(
+        cls,
+        batch,
+        mode=Literal["traj", "axes", "annotations"],
+        viz_batch_key="actions_cartesian",
+        image_key=None,
+        transform_list=None,
+        **kwargs,
+    ):
         """Visualizes a batch of transformed data."""
-        raise NotImplementedError
+        if transform_list is not None:
+            batch = cls.apply_transform(batch, transform_list)
+        image_key = image_key or cls.VIZ_IMAGE_KEY
+        intrinsics_key = cls.VIZ_INTRINSICS_KEY
+        mode = (mode or "traj").lower()
+        B = batch[image_key].shape[0]
+        image = _to_numpy(batch[image_key][0])
+        if (
+            hasattr(batch[viz_batch_key], "shape")
+            and batch[viz_batch_key].shape[0] == B
+        ):
+            viz_data = _to_numpy(batch[viz_batch_key][0])
+        else:
+            viz_data = batch[viz_batch_key]
+        return cls.viz(
+            image=image,
+            viz_data=viz_data,
+            mode=mode,
+            intrinsics_key=intrinsics_key,
+            **kwargs,
+        )
+
+    @classmethod
+    def viz(
+        cls,
+        image,
+        viz_data,
+        mode=Literal["traj", "axes", "annotations"],
+        intrinsics_key=None,
+        **kwargs,
+    ):
+        intrinsics_key = intrinsics_key or cls.VIZ_INTRINSICS_KEY
+        if mode == "traj":
+            return _viz_traj(
+                image=image,
+                actions=viz_data,
+                intrinsics_key=intrinsics_key,
+                **kwargs,
+            )
+        if mode == "axes":
+            return _viz_axes(
+                image=image,
+                actions=viz_data,
+                intrinsics_key=intrinsics_key,
+                **kwargs,
+            )
+        if mode == "annotations":
+            return _viz_annotations(
+                image=image,
+                annotations=viz_data,
+                **kwargs,
+            )
+        raise ValueError(
+            f"Unsupported mode '{mode}'. Expected one of: ('traj', 'axes', 'annotations')."
+        )
 
     @staticmethod
     def get_keymap():
@@ -97,10 +163,10 @@ class Embodiment(ABC):
             action = actions[i]
             pred_action = pred_actions[i]
             ims = cls.viz(
-                image, action, mode=mode, color="Reds", alpha=gt_alpha, **kwargs
+                image, action, mode=mode, color="Greens", alpha=gt_alpha, **kwargs
             )
             ims = cls.viz(
-                ims, pred_action, mode=mode, color="Greens", alpha=pred_alpha, **kwargs
+                ims, pred_action, mode=mode, color="Reds", alpha=pred_alpha, **kwargs
             )
             ims_list.append(ims)
         ims = np.stack(ims_list, axis=0)

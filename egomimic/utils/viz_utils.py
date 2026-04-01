@@ -49,17 +49,17 @@ def _prepare_viz_image(img):
     return img
 
 
-def _viz_traj(images, actions, intrinsics_key, **kwargs):
+def _viz_traj(image, actions, intrinsics_key, **kwargs):
     color = kwargs.get("color", "Blues")
     alpha = kwargs.get("alpha", 1.0)
     if not ColorPalette.is_valid(color):
         raise ValueError(f"Invalid color palette: {color}")
 
-    images = _prepare_viz_image(images)
+    image = _prepare_viz_image(image)
     intrinsics = INTRINSICS[intrinsics_key]
     left_xyz, _, right_xyz, _ = _split_action_pose(actions)
 
-    base = images.copy()
+    base = image.copy()
     overlay = draw_actions(
         base.copy(),
         type="xyz",
@@ -85,12 +85,12 @@ def _viz_traj(images, actions, intrinsics_key, **kwargs):
     return vis
 
 
-def _viz_axes(images, actions, intrinsics_key, axis_len_m=0.04, **kwargs):
+def _viz_axes(image, actions, intrinsics_key, axis_len_m=0.04, **kwargs):
     alpha = kwargs.get("alpha", 1.0)
-    images = _prepare_viz_image(images)
+    image = _prepare_viz_image(image)
     intrinsics = INTRINSICS[intrinsics_key]
     left_xyz, left_ypr, right_xyz, right_ypr = _split_action_pose(actions)
-    base = images.copy()
+    base = image.copy()
     vis = base.copy()
 
     def _draw_axis_color_legend(frame):
@@ -179,7 +179,7 @@ def _viz_axes(images, actions, intrinsics_key, axis_len_m=0.04, **kwargs):
 
 
 def _viz_keypoints(
-    images,
+    image,
     actions,
     intrinsics_key,
     edges,
@@ -190,11 +190,11 @@ def _viz_keypoints(
 ):
     """Visualize all 21 MANO keypoints per hand, projected onto the image."""
     alpha = kwargs.get("alpha", 1.0)
-    images = _prepare_viz_image(images)
+    image = _prepare_viz_image(image)
 
     intrinsics = INTRINSICS[intrinsics_key]
 
-    base = images.copy()
+    base = image.copy()
     vis = base.copy()
     h, w = vis.shape[:2]
 
@@ -257,6 +257,70 @@ def _viz_keypoints(
 
     if alpha < 1.0:
         vis = cv2.addWeighted(vis, alpha, base, 1.0 - alpha, 0)
+    return vis
+
+
+def _wrap_text(text, font, font_scale, thickness, max_width):
+    """Word-wrap *text* so each line fits within *max_width* pixels."""
+    words = text.split()
+    if not words:
+        return [""]
+    lines, current = [], words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        tw, _ = cv2.getTextSize(candidate, font, font_scale, thickness)[0]
+        if tw <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _viz_annotations(image, annotations: list[str], **kwargs):
+    """Render a list of text annotations onto the image."""
+    image = _prepare_viz_image(image)
+    vis = image.copy()
+    h, w = vis.shape[:2]
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.4, h / 800)
+    thickness = max(1, int(h / 400))
+    line_height = int(font_scale * 30)
+    margin = int(h * 0.02)
+    max_text_width = w - 2 * margin
+
+    wrapped_lines = []
+    for text in annotations:
+        wrapped_lines.extend(
+            _wrap_text(text, font, font_scale, thickness, max_text_width)
+        )
+
+    y = h - margin - len(wrapped_lines) * line_height
+    for line in wrapped_lines:
+        y += line_height
+        cv2.putText(
+            vis,
+            line,
+            (margin, y),
+            font,
+            font_scale,
+            (0, 0, 0),
+            thickness + 2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            vis,
+            line,
+            (margin, y),
+            font,
+            font_scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+
     return vis
 
 

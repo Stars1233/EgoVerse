@@ -17,73 +17,26 @@ from egomimic.rldb.zarr.action_chunk_transforms import (
     Transform,
     XYZWXYZ_to_XYZYPR,
 )
-from egomimic.utils.type_utils import _to_numpy
 from egomimic.utils.viz_utils import (
     ColorPalette,
-    _viz_axes,
     _viz_keypoints,
-    _viz_traj,
 )
 
 
 class Human(Embodiment):
-    VIZ_INTRINSICS_KEY = "base"
-    VIZ_IMAGE_KEY = "observations.images.front_img_1"
     ACTION_STRIDE = 3
-
-    @classmethod
-    def viz_transformed_batch(
-        cls,
-        batch,
-        mode=Literal["traj", "axes", "keypoints"],
-        action_key="actions_cartesian",
-        image_key=None,
-        transform_list=None,
-        **kwargs,
-    ):
-        if transform_list is not None:
-            batch = cls.apply_transform(batch, transform_list)
-
-        image_key = image_key or cls.VIZ_IMAGE_KEY
-        action_key = action_key or "actions_cartesian"
-        intrinsics_key = cls.VIZ_INTRINSICS_KEY
-        mode = (mode or "traj").lower()
-        images = _to_numpy(batch[image_key][0])
-        actions = _to_numpy(batch[action_key][0])
-
-        return cls.viz(
-            images=images,
-            actions=actions,
-            mode=mode,
-            intrinsics_key=intrinsics_key,
-            **kwargs,
-        )
 
     @classmethod
     def viz(
         cls,
-        images,
-        actions,
-        mode=Literal["traj", "axes", "keypoints"],
+        image,
+        viz_data,
+        mode=Literal["traj", "axes", "annotations", "keypoints"],
         intrinsics_key=None,
         **kwargs,
     ):
-        intrinsics_key = intrinsics_key or cls.VIZ_INTRINSICS_KEY
-        if mode == "traj":
-            return _viz_traj(
-                images=images,
-                actions=actions,
-                intrinsics_key=intrinsics_key,
-                **kwargs,
-            )
-        if mode == "axes":
-            return _viz_axes(
-                images=images,
-                actions=actions,
-                intrinsics_key=intrinsics_key,
-                **kwargs,
-            )
         if mode == "keypoints":
+            intrinsics_key = intrinsics_key or cls.VIZ_INTRINSICS_KEY
             color = kwargs.get("color", None)
             if color is not None and ColorPalette.is_valid(color):
                 n = len(cls.FINGER_COLORS)
@@ -96,8 +49,8 @@ class Human(Embodiment):
                 colors = cls.FINGER_COLORS
                 dot_color = cls.DOT_COLOR
             return _viz_keypoints(
-                images=images,
-                actions=actions,
+                image=image,
+                actions=viz_data,
                 intrinsics_key=intrinsics_key,
                 edges=cls.FINGER_EDGES,
                 edge_ranges=cls.FINGER_EDGE_RANGES,
@@ -105,94 +58,15 @@ class Human(Embodiment):
                 dot_color=dot_color,
                 **kwargs,
             )
-        raise ValueError(
-            f"Unsupported mode '{mode}'. Expected one of: "
-            f"('traj', 'axes', 'keypoints')."
+        return super().viz(
+            image, viz_data, mode=mode, intrinsics_key=intrinsics_key, **kwargs
         )
 
-    @classmethod
-    def get_keymap(cls, mode: Literal["cartesian", "keypoints"]):
-        if mode == "cartesian":
-            key_map = {
-                cls.VIZ_IMAGE_KEY: {
-                    "key_type": "camera_keys",
-                    "zarr_key": "images.front_1",
-                },
-                "right.action_ee_pose": {
-                    "key_type": "action_keys",
-                    "zarr_key": "right.obs_ee_pose",
-                    "horizon": 30,
-                },
-                "left.action_ee_pose": {
-                    "key_type": "action_keys",
-                    "zarr_key": "left.obs_ee_pose",
-                    "horizon": 30,
-                },
-                "right.obs_ee_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "right.obs_ee_pose",
-                },
-                "left.obs_ee_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "left.obs_ee_pose",
-                },
-                "obs_head_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "obs_head_pose",
-                },
-            }
-        elif mode == "keypoints":
-            key_map = {
-                cls.VIZ_IMAGE_KEY: {
-                    "key_type": "camera_keys",
-                    "zarr_key": "images.front_1",
-                },
-                "left.action_keypoints": {
-                    "key_type": "action_keys",
-                    "zarr_key": "left.obs_keypoints",
-                    "horizon": 30,
-                },
-                "right.action_keypoints": {
-                    "key_type": "action_keys",
-                    "zarr_key": "right.obs_keypoints",
-                    "horizon": 30,
-                },
-                "left.action_wrist_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "left.obs_wrist_pose",
-                    "horizon": 30,
-                },
-                "right.action_wrist_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "right.obs_wrist_pose",
-                    "horizon": 30,
-                },
-                "left.obs_keypoints": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "left.obs_keypoints",
-                },
-                "right.obs_keypoints": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "right.obs_keypoints",
-                },
-                "left.obs_wrist_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "left.obs_wrist_pose",
-                },
-                "right.obs_wrist_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "right.obs_wrist_pose",
-                },
-                "obs_head_pose": {
-                    "key_type": "proprio_keys",
-                    "zarr_key": "obs_head_pose",
-                },
-            }
-        else:
-            raise ValueError(
-                f"Unsupported mode '{mode}'. Expected one of: 'cartesian', 'keypoints'."
-            )
-        return key_map
+    @abstractmethod
+    def get_keymap(
+        cls, mode: Literal["cartesian", "keypoints"], annotations: bool = False
+    ):
+        pass
 
     @abstractmethod
     def get_transform_list(
@@ -281,6 +155,97 @@ class Aria(Human):
                 f"Unsupported mode '{mode}'. Expected one of: 'cartesian', 'keypoints_headframe_ypr', 'keypoints_headframe_quat', 'keypoints_wristframe_ypr', 'keypoints_wristframe_quat'."
             )
 
+    @classmethod
+    def get_keymap(
+        cls, mode: Literal["cartesian", "keypoints"], annotations: bool = False
+    ):
+        if mode == "cartesian":
+            key_map = {
+                cls.VIZ_IMAGE_KEY: {
+                    "key_type": "camera_keys",
+                    "zarr_key": "images.front_1",
+                },
+                "right.action_ee_pose": {
+                    "key_type": "action_keys",
+                    "zarr_key": "right.obs_ee_pose",
+                    "horizon": 30,
+                },
+                "left.action_ee_pose": {
+                    "key_type": "action_keys",
+                    "zarr_key": "left.obs_ee_pose",
+                    "horizon": 30,
+                },
+                "right.obs_ee_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_ee_pose",
+                },
+                "left.obs_ee_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_ee_pose",
+                },
+                "obs_head_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "obs_head_pose",
+                },
+            }
+        elif mode == "keypoints":
+            key_map = {
+                cls.VIZ_IMAGE_KEY: {
+                    "key_type": "camera_keys",
+                    "zarr_key": "images.front_1",
+                },
+                "left.action_keypoints": {
+                    "key_type": "action_keys",
+                    "zarr_key": "left.obs_keypoints",
+                    "horizon": 30,
+                },
+                "right.action_keypoints": {
+                    "key_type": "action_keys",
+                    "zarr_key": "right.obs_keypoints",
+                    "horizon": 30,
+                },
+                "left.action_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_wrist_pose",
+                    "horizon": 30,
+                },
+                "right.action_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_wrist_pose",
+                    "horizon": 30,
+                },
+                "left.obs_keypoints": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_keypoints",
+                },
+                "right.obs_keypoints": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_keypoints",
+                },
+                "left.obs_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_wrist_pose",
+                },
+                "right.obs_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_wrist_pose",
+                },
+                "obs_head_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "obs_head_pose",
+                },
+            }
+        else:
+            raise ValueError(
+                f"Unsupported mode '{mode}'. Expected one of: 'cartesian', 'keypoints'."
+            )
+        if annotations:
+            key_map["annotations"] = {
+                "key_type": "annotation_keys",
+                "zarr_key": "annotations",
+            }
+        return key_map
+
 
 class Scale(Human):
     VIZ_INTRINSICS_KEY = "scale"
@@ -295,6 +260,89 @@ class Scale(Human):
             return _build_aria_cartesian_bimanual_transform_list(
                 stride=cls.ACTION_STRIDE
             )
+
+    @classmethod
+    def get_keymap(
+        cls, mode: Literal["cartesian", "keypoints"], annotations: bool = False
+    ):
+        if mode == "cartesian":
+            key_map = {
+                cls.VIZ_IMAGE_KEY: {
+                    "key_type": "camera_keys",
+                    "zarr_key": "images.front_1",
+                },
+                "right.action_ee_pose": {
+                    "key_type": "action_keys",
+                    "zarr_key": "right.obs_ee_pose",
+                    "horizon": 30,
+                },
+                "left.action_ee_pose": {
+                    "key_type": "action_keys",
+                    "zarr_key": "left.obs_ee_pose",
+                    "horizon": 30,
+                },
+                "right.obs_ee_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_ee_pose",
+                },
+                "left.obs_ee_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_ee_pose",
+                },
+            }
+        elif mode == "keypoints":
+            key_map = {
+                cls.VIZ_IMAGE_KEY: {
+                    "key_type": "camera_keys",
+                    "zarr_key": "images.front_1",
+                },
+                "left.action_keypoints": {
+                    "key_type": "action_keys",
+                    "zarr_key": "left.obs_keypoints",
+                    "horizon": 30,
+                },
+                "right.action_keypoints": {
+                    "key_type": "action_keys",
+                    "zarr_key": "right.obs_keypoints",
+                    "horizon": 30,
+                },
+                "left.action_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_wrist_pose",
+                    "horizon": 30,
+                },
+                "right.action_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_wrist_pose",
+                    "horizon": 30,
+                },
+                "left.obs_keypoints": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_keypoints",
+                },
+                "right.obs_keypoints": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_keypoints",
+                },
+                "left.obs_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "left.obs_wrist_pose",
+                },
+                "right.obs_wrist_pose": {
+                    "key_type": "proprio_keys",
+                    "zarr_key": "right.obs_wrist_pose",
+                },
+            }
+        else:
+            raise ValueError(
+                f"Unsupported mode '{mode}'. Expected one of: 'cartesian', 'keypoints'."
+            )
+        if annotations:
+            key_map["annotations"] = {
+                "key_type": "annotation_keys",
+                "zarr_key": "annotations",
+            }
+        return key_map
 
 
 class Mecka(Human):
