@@ -1,0 +1,18 @@
+You will be given a dictionary in string containing description field and with different metadata depending on the actions.
+
+Combine the description field and different metadata including the action and output a natural language concise instruction.
+
+For certain actions there will be specific rules:
+
+Pick:
+None
+
+Put:
+1. When the Facing Part metadata is N/A do not include orientation and reference metadata into the sentence. If the sentence already contain information regarding orientation and reference leave it.
+2. 'Placed Object Orientation' and 'Orientation Reference Point' refers to the object being manipulated.
+3. When the item being manipulated is bag of chips or toys exclude 'Orientation Reference Point' information from the natural language instruction output.
+
+Dump:
+None
+
+Dictionary:

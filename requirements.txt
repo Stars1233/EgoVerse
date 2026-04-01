@@ -55,3 +55,5 @@ mediapy
 pytest
 pre-commit
 ruff
+scaleapi
+openai

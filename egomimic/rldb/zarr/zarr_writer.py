@@ -7,7 +7,7 @@ compatible with the ZarrEpisode reader.
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import simplejpeg
@@ -298,6 +298,7 @@ class ZarrWriter:
         task_description: str = "",
         annotations: list[tuple[str, int, int]] | None = None,
         chunk_timesteps: int = 100,
+        verbose: bool = False,
     ):
         """
         Initialize ZarrWriter.
@@ -320,7 +321,7 @@ class ZarrWriter:
         self.task_description = task_description
         self.annotations = annotations if annotations is not None else []
         self.chunk_timesteps = chunk_timesteps
-
+        self.verbose = verbose
         # Track image shapes for metadata
         self._features: dict[str, dict[str, Any]] = {}
 
@@ -587,8 +588,41 @@ class ZarrWriter:
             "names": ["height", "width", "channel"],
         }
 
+    def check_key_exists(self, episode_path: str, key: str) -> bool:
+        return key in zarr.open(str(episode_path), mode="r", zarr_format=3)
+
+    def remove_key(self, episode_path: str, key: str):
+        store = zarr.open(str(episode_path), mode="a", zarr_format=3)
+        del store[key]
+
+    def append_annotations(
+        self,
+        annotation_key: str,
+        annotations: list[tuple[str, int, int]],
+        mode: Literal["w", "a"] = "a",
+    ) -> None:
+        """
+        Write language annotations to the Zarr store.
+
+        Args:
+            annotation_key: Key to write annotations to.
+            annotations: List of (text, start_idx, end_idx) tuples.
+        """
+        annotation_exists = self.check_key_exists(self.episode_path, annotation_key)
+        if annotation_exists:
+            if mode == "w":
+                if self.verbose:
+                    episode_name = self.episode_path.stem
+                    print(f"({episode_name}) Removing key: {annotation_key}")
+                self.remove_key(self.episode_path, annotation_key)
+        store = zarr.open(str(self.episode_path), mode="a", zarr_format=3)
+        self._write_annotations(store, annotations, annotation_key)
+
     def _write_annotations(
-        self, store: zarr.Group, annotations: list[tuple[str, int, int]]
+        self,
+        store: zarr.Group,
+        annotations: list[tuple[str, int, int]],
+        annotation_key: str = "annotations",
     ) -> None:
         """
         Write language annotations as JSON-encoded bytes.
@@ -616,17 +650,17 @@ class ZarrWriter:
         n_annotations = len(annotations)
         chunk_shape = (max(1, n_annotations),)
         store.create_array(
-            "annotations",
+            annotation_key,
             shape=encoded.shape,
             chunks=chunk_shape,
             shards=(n_annotations,),
             dtype=VariableLengthBytes(),
         )
         if n_annotations > 0:
-            store["annotations"][:] = encoded
+            store[annotation_key][:] = encoded
 
         # Track in features
-        self._features["annotations"] = {
+        self._features[annotation_key] = {
             "dtype": "json",
             "shape": [n_annotations],
             "names": ["json"],
