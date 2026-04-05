@@ -1,4 +1,6 @@
-_target_: egomimic.pl_utils.pl_data_utils.MultiDataModuleWrapper
+defaults:
+  - cotrain_pi_base
+  - _self_
 train_datasets:
   eva_bimanual:
     filters:

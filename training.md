@@ -252,3 +252,41 @@ By default in `train_zarr_cartesian.yaml` norm stats are computed over the whole
 -   Always verify `folder_path` exists and has enough disk space.\
 -   Large datasets will auto-download from S3 if not present locally.\
 -   For debugging small runs, filter by a single `episode_hash`.  You can also set logger=debug trainer=debug to run fewer epochs.
+
+------------------------------------------------------------------------
+
+# Sample Commands
+
+## Debugging
+
+``` bash
+python egomimic/trainHydra.py \
+    --config-name=train_zarr_cartesian_pi \
+    trainer=debug \
+    logger=debug \
+    norm_stats.sample_frac=0.001
+```
+
+## Training
+
+``` bash
+python egomimic/trainHydra.py -m \
+    --config-name=train_zarr_cartesian_pi \
+    name="fold_clothes" \
+    description="test_run" \
+    launch_params.nodes=1 \
+    launch_params.gpus_per_node=4
+```
+
+## Eval (using multirun.yaml from a previous training run)
+
+``` bash
+python egomimic/trainHydra.py \
+  --config-path=../logs/test/test_2026-04-07_15-53-47/.hydra/ \
+  --config-name=config \
+  hydra.searchpath=[file://egomimic/hydra_configs] \
+  ++mode=eval \
+  +evaluator=eval_video \
+  +norm_stats.precomputed_norm_path="logs/test/test_2026-04-07_15-53-47/norm_stats/norm_stats.json" \
+  ++ckpt_path="'logs/test/test_2026-04-07_14-20-30/checkpoints/last.ckpt'"
+```

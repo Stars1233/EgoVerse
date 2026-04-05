@@ -290,9 +290,6 @@ def build_tokenized_collate(
     tok = AutoTokenizer.from_pretrained(model_name)
 
     def _collate(batch):
-        # Ensure annotations are always strings (no None) before collating/tokenizing
-        list_keys = _extract_list_keys(batch)
-
         if annotation_key is None:
             annotation = {}
             prompts = [default_prompt] * len(batch)
@@ -308,6 +305,8 @@ def build_tokenized_collate(
                     prompts.append(sample[random.randint(0, len(sample) - 1)])
                 elif sampling_mode == "first":
                     prompts.append(sample[0])
+
+        list_keys = _extract_list_keys(batch)
 
         enc = tok(
             prompts,

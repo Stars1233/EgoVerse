@@ -1,13 +1,14 @@
 defaults:
-  - model: hpt_cotrain_flow_shared_head
+  - model: hpt_bc_flow_eva
   - visualization: cartesian
   - paths: default
   - trainer: ddp
   - debug: null
   - logger: wandb
-  - data: eva_aria_cotrain
+  - data: eva
   - callbacks: checkpoints
   - data_schematic: default
+  - evaluator: eval_video
   - override hydra/launcher: submitit
   - _self_
 
@@ -15,12 +16,6 @@ name: test
 description: test
 ckpt_path: null
 mode: train
-
-eval_class:
-  _target_: egomimic.scripts.evaluation.Eve
-  mode: real
-  arm: both
-  eval_path: "./logs/eval/${name}_${now:%Y-%m-%d_%H-%M-%S}"
 
 hydra:
   run:

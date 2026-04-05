@@ -21,7 +21,6 @@ import hydra
 import pandas as pd
 import ray
 import requests
-from omegaconf import OmegaConf
 from scaleapi import ScaleClient
 
 from egomimic.scripts.language_process.scale_to_zarr_annotation import (
@@ -155,7 +154,13 @@ if __name__ == "__main__":
         df = load_scale_annotation_csv(csv_path)
 
     # --- Instantiate datasets (sequential, needs SQL / S3 sync) ---
-    dataset_cfg = OmegaConf.load(args.dataset_config_path)
+    from egomimic.utils.hydra_utils import HYDRA_CONFIG_DIR, load_config
+
+    # Derive config name relative to hydra_configs dir (e.g. "data/cotrain_pi_lang")
+    abs_cfg_path = os.path.abspath(args.dataset_config_path)
+    rel_path = os.path.relpath(abs_cfg_path, HYDRA_CONFIG_DIR)
+    config_name = os.path.splitext(rel_path)[0]
+    dataset_cfg = load_config(config_name)
 
     train_datasets = {}
     train_hashes = set()

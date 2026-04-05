@@ -1,22 +1,3 @@
-"""
-Sample Viz Command:
-python egomimic/trainHydra.py -m \
-  --config-path=logs/eva/71_max_autotune_2026-04-02_19-27-55/ \
-  --config-name=multirun \
-  trainer=viz \
-  ckpt_path=logs/eva/71_max_autotune_2026-04-02_19-27-55/0/checkpoints/last.ckpt \
-  launch_params.nodes=1 \
-  launch_params.gpus_per_node=1
-
-python egomimic/trainHydra.py \
-  --config-path=/storage/home/hcoda1/4/paphiwetsa3/r-dxu345-0/projects/EgoVerse/logs/eva/71_max_autotune_2026-04-02_19-27-55/ \
-  --config-name=multirun \
-  hydra.searchpath=[file:///storage/home/hcoda1/4/paphiwetsa3/r-dxu345-0/projects/EgoVerse/egomimic/hydra_configs] \
-  +trainer=viz \
-  ++logger=debug \
-  +ckpt_path=/storage/home/hcoda1/4/paphiwetsa3/r-dxu345-0/projects/EgoVerse/logs/eva/71_max_autotune_2026-04-02_19-27-55/0/checkpoints/last.ckpt
-"""
-
 import copy
 import os
 import signal
@@ -24,16 +5,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
 import lightning as L
+import torch
 from lightning import Callback, LightningDataModule, LightningModule, Trainer
 from lightning.pytorch.loggers import Logger
 from lightning.pytorch.plugins.environments import SLURMEnvironment
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from tabulate import tabulate
 
+from egomimic.eval.eval import Eval
 from egomimic.pl_utils.pl_model import ModelWrapper
 from egomimic.rldb.zarr.utils import DataSchematic, set_global_seed
 from egomimic.rldb.zarr.zarr_dataset_multi import MultiDataset
-from egomimic.scripts.evaluation.eval import Eval
 from egomimic.utils.aws.aws_data_utils import load_env
 from egomimic.utils.instantiators import instantiate_callbacks, instantiate_loggers
 from egomimic.utils.logging_utils import log_hyperparameters
@@ -136,8 +118,6 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         cfg.data, train_datasets=train_datasets, valid_datasets=valid_datasets
     )
 
-    # TODO: deprecate shape inference in favor of LeRobotDatasetMetadata
-    # NOTE: We assume that each dataset is of a unique embodiment. Multi-task datasets should be wrapped around TODO: MultiRLDBDataset
     for dataset_name, dataset in datamodule.train_datasets.items():
         log.info(f"Inferring shapes for dataset <{dataset_name}>")
         data_schematic.infer_shapes_from_batch(dataset[0])
@@ -160,9 +140,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 cfg, "norm_stats.precomputed_norm_path", default=None
             ),
         )
-        # cache_stats: optional norm_stats.json under trainer.default_root_dir/norm_stats/ (numeric arrays only).
-        if OmegaConf.select(cfg, "norm_stats.cache_stats", default=False):
-            data_schematic.cache_stats(save_cache_dir=cfg.trainer.default_root_dir)
+        # Cache norm stats if save_cache_dir is set
+        save_cache_dir = OmegaConf.select(
+            cfg, "norm_stats.save_cache_dir", default=None
+        )
+        if save_cache_dir:
+            data_schematic.cache_stats(save_cache_dir=save_cache_dir)
 
     if cfg.reject_outliers:
         # Propagate the shared data schematic to top-level MultiDatasets for bounds checks.
@@ -191,6 +174,30 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     log.info("Instantiating callbacks...")
     callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))
+
+    # Resolve mode: support both new `mode` key and legacy `train`/`eval` booleans
+    if cfg.get("mode") is not None:
+        mode = cfg.mode
+    elif cfg.get("train", False):
+        mode = "train"
+    elif cfg.get("eval", False):
+        mode = "eval"
+    else:
+        raise ValueError("Config must specify either `mode` or `train`/`eval` booleans")
+
+    # In eval mode, apply trainer overrides from the eval object and disable logger
+    if mode == "eval":
+        eval_obj: Eval = hydra.utils.instantiate(cfg.evaluator)
+        log.info(
+            "Eval mode: applying trainer overrides from eval config, disabling logger"
+        )
+        with open_dict(cfg):
+            for k, v in eval_obj.override_dict.items():
+                cfg.trainer[k] = v
+            cfg.trainer.devices = 1
+            cfg.trainer.num_nodes = 1
+            cfg.trainer.num_sanity_val_steps = 0
+            cfg.logger = None
 
     log.info("Instantiating loggers...")
     logger: List[Logger] = instantiate_loggers(cfg.get("logger"))
@@ -231,7 +238,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     os.makedirs(os.path.join(trainer.default_root_dir, "videos"), exist_ok=True)
 
-    if cfg.get("train"):
+    if mode == "train":
+        if cfg.get("evaluator") is not None:
+            eval_obj: Eval = hydra.utils.instantiate(cfg.evaluator)
+            eval_obj.trainer = trainer
+            eval_obj.model = model.model
+            model.evaluator = eval_obj
         log.info("Starting training!")
         trainer.fit(
             model=model,
@@ -239,13 +251,20 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             ckpt_path=cfg.get("ckpt_path"),
             weights_only=False,
         )
-
-    if cfg.get("eval"):
-        eval: Eval = hydra.utils.instantiate(
-            cfg.eval_class, config=cfg.model, ckpt_path=cfg.get("ckpt_path")
-        )
+    elif mode == "eval":
+        eval_obj.trainer = trainer
+        eval_obj.model = model.model
+        model.evaluator = eval_obj
+        # Load checkpoint weights manually so we can reset the epoch counter
+        ckpt_path = cfg.get("ckpt_path")
+        if ckpt_path:
+            checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            model.load_state_dict(checkpoint["state_dict"], strict=False)
+            log.info(f"Loaded weights from {ckpt_path}")
         log.info("Starting evaluation!")
-        eval.perfom_eval()
+        trainer.validate(model=model, datamodule=datamodule)
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
 
     train_metrics = trainer.callback_metrics
 
@@ -268,7 +287,9 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
 
 @hydra.main(
-    version_base="1.3", config_path="./hydra_configs", config_name="train_zarr_cartesian.yaml"
+    version_base="1.3",
+    config_path="./hydra_configs",
+    config_name="train_zarr_cartesian.yaml",
 )
 def main(cfg: DictConfig) -> Optional[float]:
     """Main entry point for training.

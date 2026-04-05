@@ -1,4 +1,3 @@
-import os
 import random
 from collections import OrderedDict, deque
 from typing import Any, Dict
@@ -6,12 +5,10 @@ from typing import Any, Dict
 import hydra
 import numpy as np
 import torch
-import torchvision.io as tvio
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 
 import egomimic.utils.tensor_utils as TensorUtils
-from egomimic.rldb.embodiment.embodiment import get_embodiment
 from egomimic.rldb.zarr.utils import DataSchematic
 
 
@@ -37,6 +34,7 @@ class ModelWrapper(LightningModule):
         scheduler_interval="epoch",
         scheduler_frequency: int = 1,
         viz_func=None,
+        evaluator=None,
     ):
         """
         Args:
@@ -65,8 +63,8 @@ class ModelWrapper(LightningModule):
             pass
         self.grad_norm_history = deque(maxlen=self.grad_norm_mad_window)
 
-        self.val_image_buffer, self.val_counter = {}, {}
         self.epoch_memory_stats = []  # Store memory stats per epoch
+        self.evaluator = evaluator
 
     @staticmethod
     def _as_config(cfg):
@@ -84,12 +82,6 @@ class ModelWrapper(LightningModule):
             data_schematic=data_schematic,
             viz_func=viz_func,
         )
-
-    def root_dir(self):
-        return self.trainer.default_root_dir
-
-    def video_dir(self):
-        return os.path.join(self.root_dir(), "videos")
 
     # batch is now a dict, handle on model side
     def training_step(self, batch, batch_idx):
@@ -174,85 +166,30 @@ class ModelWrapper(LightningModule):
         )
 
     def on_validation_start(self):
+        if self.evaluator is None:
+            return
         self.model.device = self.device
 
-        if self.trainer.is_global_zero:
-            os.makedirs(
-                os.path.join(self.video_dir(), f"epoch_{self.trainer.current_epoch}"),
-                exist_ok=True,
-            )
+        self.evaluator.on_validation_start()
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         """
         Run a validation step on the batch, and save that batch of images into the val_image_buffer.  Once the buffer hits 1000 images, save that as a 30fps video using torchvision.io.write_video.
         """
+        if self.evaluator is None:
+            return
         batch = self.model.process_batch_for_training(batch)
         print(
             f"[VAL_STEP] rank={self.global_rank}, batch_idx={batch_idx}",
             flush=True,
         )
-        metrics, images_dict = self.model.forward_eval_logging(batch)
-
-        metrics = {
-            k: (
-                v.to(self.device)
-                if torch.is_tensor(v)
-                else torch.tensor(v, device=self.device)
-            )
-            for k, v in metrics.items()
-        }
-
-        ## images is now a dict
-        for key, images in images_dict.items():
-            os.makedirs(
-                os.path.join(
-                    self.video_dir(),
-                    f"epoch_{self.trainer.current_epoch}",
-                    str(get_embodiment(key)),
-                ),
-                exist_ok=True,
-            )
-            if key not in self.val_image_buffer or self.val_image_buffer[key] is None:
-                self.val_image_buffer[key] = []
-                self.val_counter[key] = 0
-            self.val_image_buffer[key].extend(torch.from_numpy(images))
-            if len(self.val_image_buffer[key]) >= 1000:
-                frames = torch.stack(self.val_image_buffer[key])
-                path = os.path.join(
-                    self.video_dir(),
-                    f"epoch_{self.trainer.current_epoch}",
-                    str(get_embodiment(key)),
-                    f"validation_video_{self.val_counter[key]}.mp4",
-                )
-                tvio.write_video(path, frames, fps=30, video_codec="h264")
-                self.val_image_buffer[key].clear()
-                self.val_counter[key] += 1
-
-        self.log_dict(metrics, sync_dist=True)
+        self.evaluator.on_validation_step(batch, batch_idx, dataloader_idx)
 
     def on_validation_end(self):
         print(f"[ON_VALIDATION_END] rank={self.global_rank}", flush=True)
-        for key, buffer in self.val_image_buffer.items():
-            os.makedirs(
-                os.path.join(
-                    self.video_dir(),
-                    f"epoch_{self.trainer.current_epoch}",
-                    str(get_embodiment(key)),
-                ),
-                exist_ok=True,
-            )
-            if len(buffer) != 0:
-                frames = torch.stack(buffer)
-                path = os.path.join(
-                    self.video_dir(),
-                    f"epoch_{self.trainer.current_epoch}",
-                    str(get_embodiment(key)),
-                    f"validation_video_{self.val_counter[key]}.mp4",
-                )
-                tvio.write_video(path, frames, fps=30, video_codec="h264")
+        if self.evaluator is not None:
+            self.evaluator.on_validation_end()
 
-            self.val_counter[key] = 0
-            self.val_image_buffer[key] = []
         print(
             f"Rank {self.global_rank} on validation end, waiting for all ranks to synchronize",
             flush=True,
