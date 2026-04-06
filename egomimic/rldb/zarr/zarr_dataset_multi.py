@@ -663,13 +663,8 @@ class MultiDataset(torch.utils.data.Dataset):
                 "quantile_99_99",
                 stats.get("quantile_99_9", stats["quantile_99"]),
             )
-            if isinstance(q_low, np.ndarray):
-                q_low = torch.from_numpy(q_low).float()
-            if isinstance(q_high, np.ndarray):
-                q_high = torch.from_numpy(q_high).float()
-
-            q_low = q_low.to(arr.device).float()
-            q_high = q_high.to(arr.device).float()
+            q_low = torch.as_tensor(q_low, device=arr.device, dtype=torch.float32)
+            q_high = torch.as_tensor(q_high, device=arr.device, dtype=torch.float32)
 
             try:
                 q_low = torch.broadcast_to(q_low, arr.shape)

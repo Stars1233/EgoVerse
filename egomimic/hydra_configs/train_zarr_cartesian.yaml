@@ -1,6 +1,6 @@
 defaults:
   - model: hpt_cotrain_flow_shared_head
-  - visualization: eva_cartesian_aria_cartesian
+  - visualization: cartesian
   - paths: default
   - trainer: ddp
   - debug: null
@@ -16,10 +16,6 @@ description: test
 ckpt_path: null
 train: true
 eval: false
-
-norm_stats:
-  sample_frac: 1.0
-  num_workers: 10 
 
 eval_class:
   _target_: egomimic.scripts.evaluation.Eve
@@ -39,4 +35,11 @@ launch_params:
   nodes: 1
 
 seed: 42
+
+# Normalization and norm-stat cache settings (override per-run as needed).
+norm_stats:
+  sample_frac: 0.2
+  num_workers: 4
+  cache_stats: true
+  precomputed_norm_path: null
 reject_outliers: true
