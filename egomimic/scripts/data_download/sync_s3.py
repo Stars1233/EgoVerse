@@ -2,6 +2,8 @@
 Sync EgoVerse data from S3/R2 to a local directory.
 
 Example:
+    # All episodes, no named filters
+    python egomimic/scripts/data_download/sync_s3.py --local-dir /tmp/egoverse
     python egomimic/scripts/data_download/sync_s3.py --local-dir /tmp/egoverse \
         --filters aria-fold-clothes
 """
@@ -20,7 +22,8 @@ from egomimic.utils.aws.aws_data_utils import load_env
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
-DEFAULT_FILTERS = {
+# Named presets for --filters. Omit --filters to sync with no predicates (all DB episodes).
+DATA_FILTERS = {
     "aria-fold-clothes": DatasetFilter(
         filter_lambdas=[
             "lambda row: row.get('embodiment') == 'aria'",
@@ -32,11 +35,11 @@ DEFAULT_FILTERS = {
 
 def parse_dataset_filter_key(filter_key: str) -> DatasetFilter:
     try:
-        return DEFAULT_FILTERS[filter_key]
+        return DATA_FILTERS[filter_key]
     except KeyError as exc:
         raise ValueError(
             f"Unknown filter key {filter_key!r}. "
-            f"Available filter keys: {sorted(DEFAULT_FILTERS)}"
+            f"Available filter keys: {sorted(DATA_FILTERS)}"
         ) from exc
 
 
@@ -56,15 +59,20 @@ def main():
     parser.add_argument(
         "--filters",
         type=str,
-        required=True,
+        default=None,
         help=(
-            "Named DatasetFilter preset key. "
-            f"Available keys: {', '.join(sorted(DEFAULT_FILTERS))}"
+            "Optional named filter preset. "
+            "If omitted, no filter predicates are applied (sync every episode in the DB). "
+            f"Presets: {', '.join(sorted(DATA_FILTERS))}"
         ),
     )
     args = parser.parse_args()
 
-    filters = parse_dataset_filter_key(args.filters)
+    filters = (
+        parse_dataset_filter_key(args.filters)
+        if args.filters
+        else None
+    )
 
     load_env()
     S3EpisodeResolver.sync_from_filters(
