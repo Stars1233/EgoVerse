@@ -3,13 +3,16 @@ import random
 from collections import OrderedDict, deque
 from typing import Any, Dict
 
+import hydra
 import numpy as np
 import torch
 import torchvision.io as tvio
 from lightning import LightningModule
+from omegaconf import DictConfig, OmegaConf
 
 import egomimic.utils.tensor_utils as TensorUtils
 from egomimic.rldb.embodiment.embodiment import get_embodiment
+from egomimic.rldb.zarr.utils import DataSchematic
 
 
 class ModelWrapper(LightningModule):
@@ -26,20 +29,33 @@ class ModelWrapper(LightningModule):
 
     def __init__(
         self,
-        robomimic_model,
-        optimizer,
-        scheduler,
-        scheduler_interval: str = "epoch",
+        robomimic_model=None,
+        optimizer=None,
+        scheduler=None,
+        config_tree=None,
+        data_schematic_state=None,
+        scheduler_interval="epoch",
         scheduler_frequency: int = 1,
+        viz_func=None,
     ):
         """
         Args:
             model (PolicyAlgo): robomimic model to wrap.
         """
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["robomimic_model", "viz_func"])
 
-        self.model = robomimic_model
+        if config_tree is not None:
+            self.model = self._instantiate_model(
+                config_tree, data_schematic_state, viz_func
+            )
+        elif robomimic_model is not None:  # legacy support
+            self.model = robomimic_model
+        else:
+            raise ValueError(
+                "ModelWrapper requires either an instantiated robomimic_model or "
+                "a config_tree with data_schematic_state."
+            )
         self.nets = (
             self.model.nets
         )  # to ensure the lightning module has access to the model's parameters
@@ -51,7 +67,23 @@ class ModelWrapper(LightningModule):
 
         self.val_image_buffer, self.val_counter = {}, {}
         self.epoch_memory_stats = []  # Store memory stats per epoch
-        # TODO __init__ should take the config, and init the model here.  Then save_hyperparameters will just save the config rather than the model
+
+    @staticmethod
+    def _as_config(cfg):
+        if cfg is None:
+            return None
+        if isinstance(cfg, DictConfig):
+            return cfg
+        return OmegaConf.create(cfg)
+
+    def _instantiate_model(self, config_tree, data_schematic_state, viz_func=None):
+        cfg = self._as_config(config_tree)
+        data_schematic = DataSchematic.from_state(data_schematic_state)
+        return hydra.utils.instantiate(
+            cfg.model.robomimic_model,
+            data_schematic=data_schematic,
+            viz_func=viz_func,
+        )
 
     def root_dir(self):
         return self.trainer.default_root_dir
@@ -240,9 +272,34 @@ class ModelWrapper(LightningModule):
 
         :return: A dict containing the configured optimizers and learning-rate schedulers to be used for training.
         """
-        optimizer = self.hparams.optimizer(params=self.trainer.model.parameters())
-        if self.hparams.scheduler is not None:
-            scheduler = self.hparams.scheduler(optimizer=optimizer)
+        config_tree = getattr(self.hparams, "config_tree", None)
+        if config_tree is not None:
+            cfg = self._as_config(config_tree)
+            optimizer = hydra.utils.instantiate(
+                cfg.model.optimizer,
+                params=self.trainer.model.parameters(),
+            )
+            if callable(optimizer):
+                optimizer = optimizer()
+            scheduler_cfg = cfg.model.get("scheduler")
+            if scheduler_cfg is not None:
+                scheduler = hydra.utils.instantiate(
+                    scheduler_cfg,
+                    optimizer=optimizer,
+                )
+                if callable(scheduler):
+                    scheduler = scheduler()
+            else:
+                scheduler = None
+        else:
+            optimizer = self.hparams.optimizer(params=self.trainer.model.parameters())
+            scheduler = (
+                self.hparams.scheduler(optimizer=optimizer)
+                if self.hparams.scheduler is not None
+                else None
+            )
+
+        if scheduler is not None:
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {

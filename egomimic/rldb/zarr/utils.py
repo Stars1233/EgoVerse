@@ -1,4 +1,5 @@
 import ast
+import copy
 import json
 import logging
 import math
@@ -60,6 +61,7 @@ class DataSchematic(object):
         """
 
         rows = []
+        self.schematic_dict = copy.deepcopy(schematic_dict)
         self.embodiments = set()
 
         for embodiment, schematic in schematic_dict.items():
@@ -81,6 +83,49 @@ class DataSchematic(object):
         self.norm_mode = norm_mode
         self.norm_stats = {emb: {} for emb in self.embodiments}
         self._norm_run_metadata: dict[str, float | int | None] | None = None
+
+    @staticmethod
+    def _clone_norm_stats(norm_stats):
+        out = {}
+        for embodiment, embodiment_stats in (norm_stats or {}).items():
+            out[embodiment] = {}
+            for key, stats in embodiment_stats.items():
+                out[embodiment][key] = {}
+                for stat_name, value in stats.items():
+                    if torch.is_tensor(value):
+                        out[embodiment][key][stat_name] = value.detach().cpu().clone()
+                    else:
+                        out[embodiment][key][stat_name] = copy.deepcopy(value)
+        return out
+
+    def to_state(self):
+        return {
+            "schematic_dict": copy.deepcopy(self.schematic_dict),
+            "norm_mode": self.norm_mode,
+            "df_records": copy.deepcopy(self.df.to_dict("records")),
+            "shapes_infered": self.shapes_infered,
+            "norm_stats": self._clone_norm_stats(self.norm_stats),
+        }
+
+    @classmethod
+    def from_state(cls, state):
+        if state is None:
+            raise ValueError("DataSchematic state must be provided for reconstruction.")
+
+        schematic = cls(
+            schematic_dict=copy.deepcopy(state["schematic_dict"]),
+            norm_mode=state.get("norm_mode", "zscore"),
+        )
+        if "df_records" in state:
+            schematic.df = pd.DataFrame(copy.deepcopy(state["df_records"]))
+            schematic.embodiments = set(
+                int(embodiment) for embodiment in schematic.df["embodiment"].unique()
+            )
+        schematic.shapes_infered = bool(state.get("shapes_infered", False))
+        schematic.norm_stats = cls._clone_norm_stats(state.get("norm_stats", {}))
+        for embodiment in schematic.embodiments:
+            schematic.norm_stats.setdefault(embodiment, {})
+        return schematic
 
     def zarr_key_to_keyname(self, zarr_key, embodiment):
         """

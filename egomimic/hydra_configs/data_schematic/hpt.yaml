@@ -65,12 +65,3 @@ schematic_dict:
     embodiment:
       key_type: metadata_keys
       zarr_key: metadata.embodiment
-viz_img_key:
-  eva_bimanual:
-    front_img_1
-  aria_bimanual:
-    front_img_1
-  mecka_bimanual:
-    front_img_1
-  scale_bimanual:
-    front_img_1

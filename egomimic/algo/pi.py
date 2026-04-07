@@ -8,6 +8,7 @@ import openpi.models_pytorch.pi0_pytorch
 import safetensors
 import torch
 import torch.nn as nn
+from openpi.shared.image_tools import resize_with_pad_torch
 from overrides import override
 from torchmetrics import MeanSquaredError
 
@@ -181,24 +182,31 @@ class PI(Algo):
                     processed_batch[embodiment_id][tk] = _batch[tk]
 
             ac_key = self.ac_keys[embodiment_id]
+            if ac_key not in processed_batch[embodiment_id]:
+                raise KeyError(
+                    f"Missing action key '{ac_key}' for embodiment {embodiment_id}. "
+                    f"Incoming keys were: {list(_batch.keys())}"
+                )
             if len(processed_batch[embodiment_id][ac_key].shape) != 3:
                 raise ValueError("Action shape in batch is not 2")
 
             B, S, _ = processed_batch[embodiment_id][ac_key].shape
-            device = processed_batch[embodiment_id][ac_key].device
             processed_batch[embodiment_id]["pad_mask"] = torch.ones(
-                B, S, 1, device=device
+                B, S, 1, device=self.device
             )
             processed_batch[embodiment_id] = self.data_schematic.normalize_data(
                 processed_batch[embodiment_id], embodiment_id
             )
             processed_batch[embodiment_id]["embodiment"] = torch.tensor(
-                [embodiment_id], device=device, dtype=torch.int64
+                [embodiment_id], device=self.device, dtype=torch.int64
             )
 
             for key, value in processed_batch[embodiment_id].items():
-                if isinstance(value, torch.Tensor) and value.dtype == torch.float64:
-                    processed_batch[embodiment_id][key] = value.float()
+                if isinstance(value, torch.Tensor):
+                    value = value.to(self.device)
+                    if value.is_floating_point():
+                        value = value.float()
+                    processed_batch[embodiment_id][key] = value
 
         if not processed_batch:
             raise ValueError(
@@ -224,10 +232,11 @@ class PI(Algo):
             proprio_keys = self.proprio_keys[embodiment_id]
             lang_keys = self.lang_keys[embodiment_id]
             ac_key = self.ac_keys[embodiment_id]
+            camera_keys = self.camera_keys.get(embodiment_id, self.pi_cam_keys)
             embodiment_name = get_embodiment(embodiment_id).lower()
             processed_obs, action = self._robomimic_to_pi_data(
                 _batch,
-                self.pi_cam_keys,
+                camera_keys,
                 proprio_keys,
                 lang_keys,
                 ac_key,
@@ -265,10 +274,11 @@ class PI(Algo):
                 proprio_keys = self.proprio_keys[embodiment_id]
                 lang_keys = self.lang_keys[embodiment_id]
                 ac_key = self.ac_keys[embodiment_id]
+                camera_keys = self.camera_keys.get(embodiment_id, self.pi_cam_keys)
                 embodiment_name = get_embodiment(embodiment_id).lower()
                 processed_obs, action = self._robomimic_to_pi_data(
                     _batch,
-                    self.pi_cam_keys,
+                    camera_keys,
                     proprio_keys,
                     lang_keys,
                     ac_key,
@@ -405,29 +415,38 @@ class PI(Algo):
         if ac_key not in batch:
             raise KeyError(f"Missing action key '{ac_key}' in batch")
 
-        action = batch[ac_key]
-
-        device = action.device
+        device = self.device
+        action = batch[ac_key].to(device)
+        image_resolution = getattr(self, "image_resolution", (224, 224))
+        required_cam_keys = getattr(self, "pi_cam_keys", cam_keys)
 
         present_flags = {
             k: (
                 k in batch and isinstance(batch[k], torch.Tensor) and batch[k].ndim == 4
             )
-            for k in cam_keys
+            for k in required_cam_keys
         }
 
         emb_id = get_embodiment_id(embodiment)  # embodiment is a name string
         converter = self.action_registry.get(emb_id, ac_key)
         action32 = converter.to32(action)
 
-        raw_images = _fill_missing_images(batch, cam_keys, device)
+        # OpenPI expects a fixed camera tuple. Human datasets only provide
+        # `base_0_rgb`, so duplicate that view into the missing wrist slots and
+        # mark those synthesized views as masked out below.
+        raw_images = _fill_missing_images(batch, required_cam_keys, device)
 
         # ---- Images (dict[str, Tensor]) ----
         images = {}
-        for k in cam_keys:
-            # keep your loop style, but pull from raw_images (always present)
-            img = _ensure_bchw(raw_images[k])  # ensure BCHW
-            img = _to_minus1_1(img)  # normalize to [-1, 1]
+        for k in required_cam_keys:
+            img = _ensure_bchw(raw_images[k])
+            img = _to_minus1_1(img)
+            if img.shape[2:] != tuple(image_resolution):
+                img = resize_with_pad_torch(img, *image_resolution)
+            if img.ndim != 4:
+                raise ValueError(
+                    f"Expected 4D BCHW image for key '{k}', got shape {tuple(img.shape)}"
+                )
             images[k] = img
 
         if not images:

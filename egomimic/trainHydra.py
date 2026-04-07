@@ -12,6 +12,7 @@ from lightning.pytorch.plugins.environments import SLURMEnvironment
 from omegaconf import DictConfig, OmegaConf
 from tabulate import tabulate
 
+from egomimic.pl_utils.pl_model import ModelWrapper
 from egomimic.rldb.zarr.utils import DataSchematic, set_global_seed
 from egomimic.rldb.zarr.zarr_dataset_multi import MultiDataset
 from egomimic.scripts.evaluation.eval import Eval
@@ -23,6 +24,17 @@ from egomimic.utils.utils import extras, task_wrapper
 
 OmegaConf.register_new_resolver("eval", eval)
 log = RankedLogger(__name__, rank_zero_only=True)
+
+
+def _build_model_config_tree(cfg: DictConfig) -> DictConfig:
+    model_cfg = copy.deepcopy(cfg.model)
+    if (
+        "robomimic_model" in model_cfg
+        and isinstance(model_cfg.robomimic_model, DictConfig)
+        and "data_schematic" in model_cfg.robomimic_model
+    ):
+        model_cfg.robomimic_model.data_schematic = None
+    return OmegaConf.create({"model": model_cfg})
 
 
 def _log_dataset_frame_counts(train_datasets: dict, valid_datasets: dict) -> None:
@@ -156,9 +168,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     # NOTE: We also pass the data_schematic_dict into the robomimic model's instatiation now that we've initialzied the shapes and norm stats.  In theory, upon loading the PL checkpoint, it will remember this, but let's see.
     log.info(f"Instantiating model <{cfg.model._target_}>")
-    model: LightningModule = hydra.utils.instantiate(
-        cfg.model,
-        robomimic_model={"data_schematic": data_schematic, "viz_func": viz_func_dict},
+    model: LightningModule = ModelWrapper(
+        config_tree=_build_model_config_tree(cfg),
+        data_schematic_state=data_schematic.to_state(),
+        viz_func=viz_func_dict,
     )
 
     _log_dataset_frame_counts(train_datasets, valid_datasets)
