@@ -36,6 +36,7 @@ class ModelWrapper(LightningModule):
         scheduler_frequency: int = 1,
         viz_func=None,
         evaluator=None,
+        enable_grad_norm: bool = True,
     ):
         """
         Args:
@@ -62,6 +63,7 @@ class ModelWrapper(LightningModule):
             self.params = self.model.nets["policy"].params
         except Exception:
             pass
+        self.enable_grad_norm = enable_grad_norm
         self.grad_norm_history = deque(maxlen=self.grad_norm_mad_window)
 
         self.epoch_memory_stats = []  # Store memory stats per epoch
@@ -147,6 +149,8 @@ class ModelWrapper(LightningModule):
         return losses["action_loss"]
 
     def on_after_backward(self):
+        if not self.enable_grad_norm:
+            return
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self.parameters(), max_norm=float("inf")
         )
@@ -182,6 +186,8 @@ class ModelWrapper(LightningModule):
             self.log("Train/" + k, v, on_step=False, on_epoch=True, sync_dist=True)
 
     def on_before_optimizer_step(self, optimizer):
+        if not self.enable_grad_norm:
+            return
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self.parameters(), max_norm=float("inf")
         )
