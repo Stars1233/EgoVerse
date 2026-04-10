@@ -22,7 +22,7 @@ from egomimic.utils.video_utils import resize_video_thwc, save_preview_mp4
 
 logger = logging.getLogger(__name__)
 
-_SPLIT_KEYS = {"obs_ee_pose", "cmd_ee_pose", "obs_joints", "cmd_joints"}
+_SPLIT_KEYS = ("obs_ee_pose", "cmd_ee_pose", "obs_joints", "cmd_joints")
 
 DATASET_KEY_MAPPINGS = {
     "obs_eepose": "obs_ee_pose",
@@ -110,7 +110,7 @@ def _split_per_arm(numeric_data: dict, arm: str) -> dict:
         [0:6]  xyz+ypr, [6] gripper.
 
     Produces keys like ``left.obs_eepose`` (T,6), ``right.gripper`` (T,1), etc.
-    Gripper is taken from ``cmd_joints`` only (commanded state).
+    ``left.gripper`` / ``right.gripper`` are taken from ``cmd_joints`` only.
     """
     out = {k: v for k, v in numeric_data.items() if k not in _SPLIT_KEYS}
 
@@ -127,8 +127,9 @@ def _split_per_arm(numeric_data: dict, arm: str) -> dict:
                 right_joints = arr[:, 7:13]
                 out[f"left.{base_key}"] = left_joints
                 out[f"right.{base_key}"] = right_joints
-                out["left.gripper"] = arr[:, 6:7]
-                out["right.gripper"] = arr[:, 13:14]
+                if base_key == "cmd_joints":
+                    out["left.gripper"] = arr[:, 6:7]
+                    out["right.gripper"] = arr[:, 13:14]
             else:
                 left_ypr = arr[:, 3:6]
                 right_ypr = arr[:, 10:13]
@@ -150,12 +151,11 @@ def _split_per_arm(numeric_data: dict, arm: str) -> dict:
                 )
                 out[f"left.{base_key}"] = left_translation_quat
                 out[f"right.{base_key}"] = right_translation_quat
-                out["left.gripper"] = arr[:, 6:7]
-                out["right.gripper"] = arr[:, 13:14]
         else:
             if "joints" in base_key:
                 out[f"{side}.{base_key}"] = arr[:, :6]
-                out[f"{side}.gripper"] = arr[:, 6:7]
+                if base_key == "cmd_joints":
+                    out[f"{side}.gripper"] = arr[:, 6:7]
             else:
                 translation = arr[:, 0:3]
                 quat = rot_orientation(
@@ -164,8 +164,6 @@ def _split_per_arm(numeric_data: dict, arm: str) -> dict:
                 quat = xyzw_to_wxyz(quat)
                 translation_quat = np.concatenate([translation, quat], axis=-1)
                 out[f"{side}.{base_key}"] = translation_quat
-                gripper = arr[:, 6:7]
-                out[f"{side}.gripper"] = gripper
 
     return out
 

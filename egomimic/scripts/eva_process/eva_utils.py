@@ -11,6 +11,9 @@ DATASET_KEY_MAPPINGS = {
     "left_wrist_img": "left_wrist_img",
 }
 
+# Keys in episode_feats whose zero xyzypr frames should be filled.
+ACTION_KEYS = {"cmd_eepose", "obs_eepose", "cmd_joints", "obs_joints"}
+
 
 class EvaHD5Extractor:
     @staticmethod
@@ -59,6 +62,12 @@ class EvaHD5Extractor:
             for state in EvaHD5Extractor.get_cmd_state(episode):
                 mapped_key = DATASET_KEY_MAPPINGS.get(state, state)
                 episode_feats[f"cmd_{mapped_key}"] = episode["actions"][state][:]
+
+            for key in ACTION_KEYS:
+                if key in episode_feats:
+                    episode_feats[key] = EvaHD5Extractor.clean_zero_data(
+                        episode_feats[key]
+                    )
 
             num_timesteps = episode_feats["obs_eepose"].shape[0]
             if arm == "right":
@@ -124,3 +133,42 @@ class EvaHD5Extractor:
         """
         states = [key for key in hdf5_data["/actions"]]
         return states
+
+    @staticmethod
+    def clean_zero_data(data: np.ndarray) -> np.ndarray:
+        """
+        Fill zero xyzypr frames in a (N, 14) action array per arm.
+
+        Layout:
+            [0:6]  left  xyzypr,  [6]  left  gripper
+            [7:13] right xyzypr,  [13] right gripper
+
+        For each arm independently: if all 6 xyzypr values at timestep t are
+        zero, replace them with the latest preceding non-zero xyzypr. If there
+        is no preceding non-zero value (start of episode), use the earliest
+        following non-zero value instead.
+        """
+        data = data.copy()
+
+        arm_pose_slices = [slice(0, 6), slice(7, 13)]  # left, right
+
+        for pose_slice in arm_pose_slices:
+            zero_mask = np.all(data[:, pose_slice] == 0, axis=1)  # (N,)
+
+            if not np.any(zero_mask):
+                continue
+
+            nonzero_indices = np.where(~zero_mask)[0]
+            if len(nonzero_indices) == 0:
+                continue  # entire arm is zero, nothing to fill from
+
+            for t in np.where(zero_mask)[0]:
+                before = nonzero_indices[nonzero_indices < t]
+                if len(before) > 0:
+                    src = before[-1]
+                else:
+                    after = nonzero_indices[nonzero_indices > t]
+                    src = after[0]  # guaranteed: nonzero_indices is non-empty
+                data[t, pose_slice] = data[src, pose_slice]
+
+        return data

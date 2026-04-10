@@ -127,6 +127,50 @@ def s3_sync_to_local(bucket: str, key_prefix: str, local_dir: str | Path) -> Non
             s3.download_file(bucket, key, str(dest), Config=config)
 
 
+def delete_s3_prefix(bucket: str, prefix: str, batch_size: int = 1000) -> int:
+    """Delete all objects under an S3-compatible prefix and return the count removed."""
+    s3 = get_boto3_s3_client()
+    prefix = prefix.strip("/")
+    deleted = 0
+
+    paginator = s3.get_paginator("list_objects_v2")
+    pending_keys: list[dict[str, str]] = []
+
+    def flush_pending() -> None:
+        nonlocal deleted, pending_keys
+        if not pending_keys:
+            return
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": pending_keys})
+        deleted += len(pending_keys)
+        pending_keys = []
+
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj.get("Key")
+            if not key:
+                continue
+            pending_keys.append({"Key": key})
+            if len(pending_keys) >= batch_size:
+                flush_pending()
+
+    flush_pending()
+    return deleted
+
+
+def delete_s3_key_if_exists(bucket: str, key: str) -> bool:
+    """Delete a single S3-compatible object key if present."""
+    s3 = get_boto3_s3_client()
+    key = key.strip("/")
+
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=1)
+    contents = response.get("Contents", [])
+    if not any(obj.get("Key") == key for obj in contents):
+        return False
+
+    s3.delete_object(Bucket=bucket, Key=key)
+    return True
+
+
 def upload_dir_to_s3(
     local_dir: str, bucket: str, prefix: str = "", concurrency: int = 32
 ):
