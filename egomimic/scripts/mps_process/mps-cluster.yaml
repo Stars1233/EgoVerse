@@ -11,14 +11,14 @@ auth:
   ssh_private_key: ~/.ssh/rldb-base-pem.pem
 
 file_mounts:
-  "/home/ubuntu/EgoVerse": "/coc/flash7/skareer6/EgoVerse"
+  "/home/ubuntu/EgoVerse": "../EgoVerse"
 
 rsync_exclude:
   - "emimic/"
-  - ".git/"
   - "**/__pycache__/"
   - "*.pyc"
   - "logs/"
+  - "external/openpi"
 
 max_workers: 15
 idle_timeout_minutes: 10
