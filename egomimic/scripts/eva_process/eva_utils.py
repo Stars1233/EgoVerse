@@ -1,8 +1,13 @@
+import datetime
+from pathlib import Path
+
 import h5py
 import numpy as np
 import torch
 
 from egomimic.rldb.embodiment.embodiment import EMBODIMENT
+
+GRIPPER_NORMALIZE_CUTOFF = datetime.datetime(2026, 4, 8, tzinfo=datetime.timezone.utc)
 
 DATASET_KEY_MAPPINGS = {
     "joint_positions": "joint_positions",
@@ -43,6 +48,7 @@ class EvaHD5Extractor:
         episode_feats = dict()
 
         with h5py.File(episode_path, "r") as episode:
+            episode_name = Path(episode_path).stem
             for camera in EvaHD5Extractor.get_cameras(episode):
                 images = (
                     torch.from_numpy(episode["observations"]["images"][camera][:])
@@ -63,11 +69,19 @@ class EvaHD5Extractor:
                 mapped_key = DATASET_KEY_MAPPINGS.get(state, state)
                 episode_feats[f"cmd_{mapped_key}"] = episode["actions"][state][:]
 
+            timestamp_ms = int(episode_name)
+            episode_dt = datetime.datetime.fromtimestamp(
+                timestamp_ms / 1000.0, tz=datetime.timezone.utc
+            )
             for key in ACTION_KEYS:
                 if key in episode_feats:
                     episode_feats[key] = EvaHD5Extractor.clean_zero_data(
                         episode_feats[key]
                     )
+                    if episode_dt < GRIPPER_NORMALIZE_CUTOFF:
+                        episode_feats[key] = EvaHD5Extractor.normalize_grippers(
+                            episode_feats[key]
+                        )
 
             num_timesteps = episode_feats["obs_eepose"].shape[0]
             if arm == "right":
@@ -171,4 +185,25 @@ class EvaHD5Extractor:
                     src = after[0]  # guaranteed: nonzero_indices is non-empty
                 data[t, pose_slice] = data[src, pose_slice]
 
+        return data
+
+    @staticmethod
+    def normalize_grippers(data: np.ndarray) -> np.ndarray:
+        """
+        Normalize the gripper data to be between 0 and 1.
+        """
+        left_gripper = data[:, 6]
+        right_gripper = data[:, 13]
+        if left_gripper.max() - left_gripper.min() < 0.5:
+            # then the gripper is not normalized yet if its in this range
+            left_gripper = (left_gripper - left_gripper.min()) / (
+                left_gripper.max() - left_gripper.min()
+            )
+        if right_gripper.max() - right_gripper.min() < 0.5:
+            # then the gripper is not normalized yet if its in this range
+            right_gripper = (right_gripper - right_gripper.min()) / (
+                right_gripper.max() - right_gripper.min()
+            )
+        data[:, 6] = left_gripper
+        data[:, 13] = right_gripper
         return data

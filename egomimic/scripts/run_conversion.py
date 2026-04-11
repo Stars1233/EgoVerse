@@ -441,6 +441,7 @@ def main():
                 "**/*.pack",
                 "**/__pycache__/**",
                 "external/openpi/**",
+                "temp_dir/**",
             ],
         }
     else:
