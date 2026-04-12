@@ -60,7 +60,7 @@ class Eva(Embodiment):
             },
             "right.obs_gripper": {
                 "key_type": "proprio_keys",
-                "zarr_key": "right.gripper",
+                "zarr_key": "right.obs_gripper",
             },
             "left.obs_ee_pose": {
                 "key_type": "proprio_keys",
@@ -68,16 +68,16 @@ class Eva(Embodiment):
             },
             "left.obs_gripper": {
                 "key_type": "proprio_keys",
-                "zarr_key": "left.gripper",
+                "zarr_key": "left.obs_gripper",
             },
-            "right.gripper": {
+            "right.cmd_gripper": {
                 "key_type": "action_keys",
-                "zarr_key": "right.gripper",
+                "zarr_key": "right.cmd_gripper",
                 "horizon": 45,
             },
-            "left.gripper": {
+            "left.cmd_gripper": {
                 "key_type": "action_keys",
-                "zarr_key": "left.gripper",
+                "zarr_key": "left.cmd_gripper",
                 "horizon": 45,
             },
             "right.cmd_ee_pose": {
@@ -101,8 +101,8 @@ def _build_eva_bimanual_revert_eef_frame_transform_list(
     obs_key: str = "observations.state.ee_pose",
     left_cmd_wristframe: str = "left.cmd_ee_pose_wristframe",
     right_cmd_wristframe: str = "right.cmd_ee_pose_wristframe",
-    left_gripper: str = "left.gripper",
-    right_gripper: str = "right.gripper",
+    left_cmd_gripper: str = "left.cmd_gripper",
+    right_cmd_gripper: str = "right.cmd_gripper",
     left_obs_camframe: str = "left.obs_ee_pose_camframe",
     right_obs_camframe: str = "right.obs_ee_pose_camframe",
     left_obs_gripper: str = "left.obs_gripper",
@@ -132,9 +132,9 @@ def _build_eva_bimanual_revert_eef_frame_transform_list(
             input_key=action_key,
             output_key_list=[
                 (left_cmd_wristframe, pose_shape),
-                (left_gripper, 1),
+                (left_cmd_gripper, 1),
                 (right_cmd_wristframe, pose_shape),
-                (right_gripper, 1),
+                (right_cmd_gripper, 1),
             ],
         ),
         # Revert wrist frame → camera frame (inverse=False: target_se3 @ chunk_se3)
@@ -155,9 +155,9 @@ def _build_eva_bimanual_revert_eef_frame_transform_list(
         ConcatKeys(
             key_list=[
                 left_cmd_camframe,
-                left_gripper,
+                left_cmd_gripper,
                 right_cmd_camframe,
-                right_gripper,
+                right_cmd_gripper,
             ],
             new_key_name=action_key,
             delete_old_keys=True,
@@ -176,8 +176,8 @@ def _build_eva_bimanual_eef_frame_transform_list(
     right_obs_pose: str = "right.obs_ee_pose",
     left_obs_gripper: str = "left.obs_gripper",
     right_obs_gripper: str = "right.obs_gripper",
-    left_gripper: str = "left.gripper",
-    right_gripper: str = "right.gripper",
+    left_cmd_gripper: str = "left.cmd_gripper",
+    right_cmd_gripper: str = "right.cmd_gripper",
     left_cmd_camframe: str = "left.cmd_ee_pose_camframe",
     right_cmd_camframe: str = "right.cmd_ee_pose_camframe",
     left_obs_camframe: str = "left.obs_ee_pose_camframe",
@@ -243,14 +243,14 @@ def _build_eva_bimanual_eef_frame_transform_list(
         ),
         InterpolateLinear(
             new_chunk_length=chunk_length,
-            action_key=left_gripper,
-            output_action_key=left_gripper,
+            action_key=left_cmd_gripper,
+            output_action_key=left_cmd_gripper,
             stride=stride,
         ),
         InterpolateLinear(
             new_chunk_length=chunk_length,
-            action_key=right_gripper,
-            output_action_key=right_gripper,
+            action_key=right_cmd_gripper,
+            output_action_key=right_cmd_gripper,
             stride=stride,
         ),
         # Step 2: transform camera-frame actions into EEF-relative (wrist) frame
@@ -295,9 +295,9 @@ def _build_eva_bimanual_eef_frame_transform_list(
             ConcatKeys(
                 key_list=[
                     left_cmd_wristframe,
-                    left_gripper,
+                    left_cmd_gripper,
                     right_cmd_wristframe,
-                    right_gripper,
+                    right_cmd_gripper,
                 ],
                 new_key_name=actions_key,
                 delete_old_keys=True,
@@ -345,8 +345,8 @@ def _build_eva_bimanual_transform_list(
     right_obs_pose: str = "right.obs_ee_pose",
     left_obs_gripper: str = "left.obs_gripper",
     right_obs_gripper: str = "right.obs_gripper",
-    left_gripper: str = "left.gripper",
-    right_gripper: str = "right.gripper",
+    left_cmd_gripper: str = "left.cmd_gripper",
+    right_cmd_gripper: str = "right.cmd_gripper",
     left_cmd_camframe: str = "left.cmd_ee_pose_camframe",
     right_cmd_camframe: str = "right.cmd_ee_pose_camframe",
     actions_key: str = "actions_cartesian",
@@ -407,14 +407,14 @@ def _build_eva_bimanual_transform_list(
         ),
         InterpolateLinear(
             new_chunk_length=chunk_length,
-            action_key=left_gripper,
-            output_action_key=left_gripper,
+            action_key=left_cmd_gripper,
+            output_action_key=left_cmd_gripper,
             stride=stride,
         ),
         InterpolateLinear(
             new_chunk_length=chunk_length,
-            action_key=right_gripper,
-            output_action_key=right_gripper,
+            action_key=right_cmd_gripper,
+            output_action_key=right_cmd_gripper,
             stride=stride,
         ),
     ]
@@ -436,9 +436,9 @@ def _build_eva_bimanual_transform_list(
             ConcatKeys(
                 key_list=[
                     left_cmd_camframe,
-                    left_gripper,
+                    left_cmd_gripper,
                     right_cmd_camframe,
-                    right_gripper,
+                    right_cmd_gripper,
                 ],
                 new_key_name=actions_key,
                 delete_old_keys=True,

@@ -109,62 +109,37 @@ def _split_per_arm(numeric_data: dict, arm: str) -> dict:
     Single-arm layout (T, 7):
         [0:6]  xyz+ypr, [6] gripper.
 
-    Produces keys like ``left.obs_eepose`` (T,6), ``right.gripper`` (T,1), etc.
-    ``left.gripper`` / ``right.gripper`` are taken from ``cmd_joints`` only.
+    Produces keys like ``left.obs_ee_pose`` (T,7), ``right.cmd_gripper`` (T,1), etc.
+    Gripper state is split into ``{side}.cmd_gripper`` (from cmd_joints) and
+    ``{side}.obs_gripper`` (from obs_joints) to preserve the cmd/obs distinction.
     """
     out = {k: v for k, v in numeric_data.items() if k not in _SPLIT_KEYS}
-
-    side = {"left": "left", "right": "right"}.get(arm)  # None for "both"
 
     for base_key in _SPLIT_KEYS:
         arr = numeric_data.get(base_key)
         if arr is None:
             continue
 
-        if arm == "both":
+        arm_list = ["left", "right"] if arm == "both" else [arm]
+        for i, side in enumerate(arm_list):
+            offset = i * 7  # left/single: 0, right (bimanual): 7
             if "joints" in base_key:
-                left_joints = arr[:, 0:6]
-                right_joints = arr[:, 7:13]
-                out[f"left.{base_key}"] = left_joints
-                out[f"right.{base_key}"] = right_joints
-                if base_key == "cmd_joints":
-                    out["left.gripper"] = arr[:, 6:7]
-                    out["right.gripper"] = arr[:, 13:14]
+                out[f"{side}.{base_key}"] = arr[:, offset : offset + 6]
+                if "cmd" in base_key:
+                    out[f"{side}.cmd_gripper"] = arr[:, offset + 6 : offset + 7]
+                elif "obs" in base_key:
+                    out[f"{side}.obs_gripper"] = arr[:, offset + 6 : offset + 7]
+                else:
+                    raise ValueError(f"Unknown gripper key: {base_key}")
             else:
-                left_ypr = arr[:, 3:6]
-                right_ypr = arr[:, 10:13]
-                left_quat = rot_orientation(
-                    R.from_euler("ZYX", left_ypr, degrees=False).as_quat()
-                )
-                right_quat = rot_orientation(
-                    R.from_euler("ZYX", right_ypr, degrees=False).as_quat()
-                )
-                left_quat = xyzw_to_wxyz(left_quat)
-                right_quat = xyzw_to_wxyz(right_quat)
-                left_translation = arr[:, 0:3]
-                right_translation = arr[:, 7:10]
-                left_translation_quat = np.concatenate(
-                    [left_translation, left_quat], axis=-1
-                )
-                right_translation_quat = np.concatenate(
-                    [right_translation, right_quat], axis=-1
-                )
-                out[f"left.{base_key}"] = left_translation_quat
-                out[f"right.{base_key}"] = right_translation_quat
-        else:
-            if "joints" in base_key:
-                out[f"{side}.{base_key}"] = arr[:, :6]
-                if base_key == "cmd_joints":
-                    out[f"{side}.gripper"] = arr[:, 6:7]
-            else:
-                translation = arr[:, 0:3]
+                translation = arr[:, offset : offset + 3]
                 quat = rot_orientation(
-                    R.from_euler("ZYX", arr[:, 3:6], degrees=False).as_quat()
+                    R.from_euler(
+                        "ZYX", arr[:, offset + 3 : offset + 6], degrees=False
+                    ).as_quat()
                 )
                 quat = xyzw_to_wxyz(quat)
-                translation_quat = np.concatenate([translation, quat], axis=-1)
-                out[f"{side}.{base_key}"] = translation_quat
-
+                out[f"{side}.{base_key}"] = np.concatenate([translation, quat], axis=-1)
     return out
 
 
