@@ -171,6 +171,40 @@ def delete_s3_key_if_exists(bucket: str, key: str) -> bool:
     return True
 
 
+def delete_aria_episode(bucket: str, prefix: str, timestamp: str) -> dict[str, bool]:
+    """
+    Delete an Aria episode's three files from Cloudflare R2:
+      {prefix}/{timestamp}.json
+      {prefix}/{timestamp}.vrs
+      {prefix}/{timestamp}_metadata.json
+
+    Returns a dict mapping each key to whether it was found and deleted.
+    """
+    prefix = prefix.strip("/")
+    keys = [
+        f"{prefix}/{timestamp}.json",
+        f"{prefix}/{timestamp}.vrs",
+        f"{prefix}/{timestamp}_metadata.json",
+    ]
+    return {key: delete_s3_key_if_exists(bucket, key) for key in keys}
+
+
+def delete_eva_episode(bucket: str, prefix: str, timestamp: str) -> dict[str, bool]:
+    """
+    Delete an Eva episode's two files from Cloudflare R2:
+      {prefix}/{timestamp}.hdf5
+      {prefix}/{timestamp}_metadata.json
+
+    Returns a dict mapping each key to whether it was found and deleted.
+    """
+    prefix = prefix.strip("/")
+    keys = [
+        f"{prefix}/{timestamp}.hdf5",
+        f"{prefix}/{timestamp}_metadata.json",
+    ]
+    return {key: delete_s3_key_if_exists(bucket, key) for key in keys}
+
+
 def upload_dir_to_s3(
     local_dir: str, bucket: str, prefix: str = "", concurrency: int = 32
 ):

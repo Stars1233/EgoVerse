@@ -205,6 +205,17 @@ def episode_table_to_df(engine):
             return df
 
 
+def reset_processed_path(engine, episode_hash):
+    episodes_tbl = _episodes_table(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            update(episodes_tbl)
+            .where(episodes_tbl.c.episode_hash == episode_hash)
+            .values(zarr_processed_path="", zarr_mp4_path="", zarr_processing_error="")
+        )
+    return True
+
+
 def episode_hash_to_timestamp_ms(timestamp_str):
     """
     Convert a string like "2026-01-12-03-47-29-664000" to UTC epoch milliseconds.
