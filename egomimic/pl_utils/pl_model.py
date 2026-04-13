@@ -32,7 +32,7 @@ class ModelWrapper(LightningModule):
         scheduler=None,
         config_tree=None,
         data_schematic_state=None,
-        scheduler_interval="epoch",
+        scheduler_interval="step",
         scheduler_frequency: int = 1,
         viz_func=None,
         evaluator=None,
@@ -293,8 +293,13 @@ class ModelWrapper(LightningModule):
         )
 
     def on_train_epoch_start(self):
-        log_all = {}
         for i, param_group in enumerate(self.optimizers().param_groups):
-            log_all[f"Optimizer/param_group_{i}_lr"] = param_group["lr"]
+            self.log(
+                f"Optimizer/param_group_{i}_lr",
+                param_group["lr"],
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
 
         return super().on_train_epoch_start()

@@ -139,14 +139,23 @@ class PI(Algo):
             model_path = os.path.join(
                 self.config.pytorch_weight_path, "model.safetensors"
             )
-            safetensors.torch.load_model(
-                (
-                    self.model.module
-                    if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
-                    else self.model
-                ),
-                model_path,
+            if not os.path.isfile(model_path):
+                raise FileNotFoundError(
+                    f"Pretrained weight file not found: {model_path}"
+                )
+            target = (
+                self.model.module
+                if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+                else self.model
             )
+            safetensors.torch.load_model(target, model_path)
+            logger.info(
+                "Loaded pretrained weights from %s (%d parameters)",
+                model_path,
+                sum(p.numel() for p in target.parameters()),
+            )
+        else:
+            logger.warning("No pytorch_weight_path specified — training from scratch")
         self.nets = nn.ModuleDict()
         self.nets["policy"] = self.model
 
