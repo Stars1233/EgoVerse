@@ -472,6 +472,30 @@ def reset_data(demo_data: dict):
     demo_data["obs"] = []
 
 
+def has_stuck_frames(obs_list: list, cam_name: str, threshold: int = 100) -> bool:
+    """Return True if any camera stream has more than `threshold` consecutive identical frames.
+
+    Uses per-frame pixel sum as a fast fingerprint instead of full array comparison.
+    """
+    consecutive = 0
+    prev_checksum = None
+    for obs in obs_list:
+        img = obs.get(cam_name)
+        if img is None:
+            prev_checksum = None
+            consecutive = 0
+            continue
+        checksum = img.sum()
+        if prev_checksum is not None and checksum == prev_checksum:
+            consecutive += 1
+            if consecutive >= threshold:
+                return True
+        else:
+            consecutive = 0
+        prev_checksum = checksum
+    return False
+
+
 def save_demo(demo_data: dict, demo_dir, episode_id: int, camera_res: dict[str, tuple]):
     """
     Args:
@@ -484,22 +508,19 @@ def save_demo(demo_data: dict, demo_dir, episode_id: int, camera_res: dict[str, 
     """Save demo to HDF5 file."""
     filename = demo_dir / f"demo_{episode_id}.hdf5"
 
-    for cam_name, (H, W) in camera_res.items():
-        image_list = []
-        for i in range(len(demo_data["obs"])):
-            img = demo_data["obs"][i][cam_name]
-            if img is None:
-                continue
-            img_rgb = img[..., ::-1]
-            image_list.append(img_rgb)
-        data_dict[f"/observations/images/{cam_name}"] = np.array(image_list)
+    for cam_name in camera_res:
+        if has_stuck_frames(demo_data["obs"], cam_name):
+            print(
+                f"[save_demo] ABORT: camera '{cam_name}' has >100 consecutive identical frames. Demo not saved."
+            )
+            return
+
     print(
         f"Saving demo with {len(demo_data['cmd_eepose_actions'])} steps to {filename}"
     )
     robot_joint_actions = np.array(demo_data["robot_joint_actions"])
     cmd_joint_actions = np.array(demo_data["cmd_joint_actions"])
     cmd_eepose_actions = np.array(demo_data["cmd_eepose_actions"])
-
 
     data_dict["/observations/joints"] = robot_joint_actions
     data_dict["/observations/joint_positions"] = robot_joint_actions
@@ -559,6 +580,21 @@ def save_demo(demo_data: dict, demo_dir, episode_id: int, camera_res: dict[str, 
         _ = root["actions"].create_dataset("eepose", (max_timesteps, 14))
         _ = root["actions"].create_dataset("joints", (max_timesteps, 14))
         _ = root.create_dataset("action", (max_timesteps, 14))
+
+        # Write images directly frame-by-frame to avoid holding all camera
+        # arrays in memory simultaneously (avoids OOM with 3 cameras x 3000 steps)
+        for cam_name, (H, W) in camera_res.items():
+            ds = root[f"observations/images/{cam_name}"]
+            idx = 0
+            for obs_step in demo_data["obs"]:
+                img = obs_step[cam_name]
+                if img is None:
+                    continue
+                ds[idx] = img[..., ::-1]
+                idx += 1
+
+        # Free observation images from memory before writing remaining arrays
+        del demo_data["obs"]
 
         for name, array in data_dict.items():
             root[name][...] = array

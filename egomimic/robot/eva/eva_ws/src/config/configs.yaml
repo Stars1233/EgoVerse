@@ -8,10 +8,10 @@ ts_offset: 0.4
 gripper:
   left:
     open: 0.09445506587172998
-    close: -0.0005234612358940971
+    close: -0.008
   right:
     open: 0.09594861425534644
-    close: 0.0
+    close: -0.001
 cameras:
   front_img_1:
     type: aria
