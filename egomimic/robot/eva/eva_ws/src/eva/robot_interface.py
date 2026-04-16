@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+import time
 import numpy as np
 import yaml
 from scipy.spatial.transform import Rotation as R
@@ -337,6 +338,10 @@ class ARXInterface(Robot_Interface):
 
     def set_home(self):
         for arm in self.arms:
+            joints = self.get_joints(arm)
+            joints[6] = 1.0
+            self.set_joints(joints, arm)
+            time.sleep(1)
             self.controller[arm].reset_to_home()
 
 
