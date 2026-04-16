@@ -270,15 +270,18 @@ class PolicyRollout(Rollout):
         self._tokenizer = None
         self.collate_fn = default_collate
         if annotation_path is not None:
-            with open(annotation_path, "r") as f:
-                self.annotation = f.read().strip()
-            self.collate_fn = build_tokenized_collate(
-                max_length=128,
-                model_name="google/paligemma-3b-mix-224",
-                sampling_mode="first",
-                annotation_key="annotations",
-                default_prompt=self.annotation,
-            )
+            if not os.path.isfile(annotation_path):
+                print(f"[rollout] WARNING: annotation file not found: {annotation_path}  (continuing without annotation)")
+            else:
+                with open(annotation_path, "r") as f:
+                    self.annotation = f.read().strip()
+                self.collate_fn = build_tokenized_collate(
+                    max_length=128,
+                    model_name="google/paligemma-3b-mix-224",
+                    sampling_mode="first",
+                    annotation_key="annotations",
+                    default_prompt=self.annotation,
+                )
 
     LOCAL_WEIGHT_PATH = "/home/robot/robot_ws/egomimic/algo/pi_checkpoints/pi05_base_pytorch"
 
@@ -512,6 +515,32 @@ class PolicyRollout(Rollout):
         
         return data
 
+    def load_annotation(self, annotation_path):
+        """Load a new annotation file, building the tokenized collate only if needed.
+
+        The annotation text flows through data["annotations"] at each inference
+        step, so updating self.annotation is sufficient when the tokenized
+        collate already exists.  We only build it when the collate is still the
+        plain default_collate (i.e. no annotation was provided at init time).
+
+        Returns True on success, False if the file could not be loaded.
+        """
+        if not os.path.isfile(annotation_path):
+            print(f"[rollout] WARNING: annotation file not found: {annotation_path}")
+            return False
+        with open(annotation_path, "r") as f:
+            self.annotation = f.read().strip()
+        if self.collate_fn is default_collate:
+            self.collate_fn = build_tokenized_collate(
+                max_length=128,
+                model_name="google/paligemma-3b-mix-224",
+                sampling_mode="first",
+                annotation_key="annotations",
+                default_prompt=self.annotation,
+            )
+        print(f"[rollout] Loaded new annotation from {annotation_path}: '{self.annotation}'")
+        return True
+
     def reset(self):
         self.actions = None
         self.debug_actions = None
@@ -621,22 +650,87 @@ def main(
     )
     kinematics_solver = EvaMinkKinematicsSolver(model_path=_get_model_xml_path())
 
+    def _enter_intervention(kp, policy, rollout_type):
+        """Pause rollout and wait for user command.
+
+        Restores the terminal to cooked mode so the user can type full
+        commands, then re-enters cbreak mode before returning.
+
+        Returns one of:
+            "continue"  – resume rollout
+            "restart"   – restart rollout
+            "quit"      – exit program
+        """
+        # Restore normal terminal so the user can type freely
+        termios.tcsetattr(kp.fd, termios.TCSADRAIN, kp.old)
+        print("\n--- INTERVENTION (rollout paused) ---")
+        print("  c            : continue rollout")
+        print("  a <path>     : load new annotation file")
+        print("  r            : restart rollout")
+        print("  q            : quit")
+
+        while True:
+            try:
+                cmd = input("> ").strip()
+            except EOFError:
+                tty.setcbreak(kp.fd)
+                return "quit"
+
+            if cmd == "c":
+                print("Resuming rollout.")
+                tty.setcbreak(kp.fd)
+                return "continue"
+            elif cmd == "q":
+                tty.setcbreak(kp.fd)
+                return "quit"
+            elif cmd == "r":
+                tty.setcbreak(kp.fd)
+                return "restart"
+            elif cmd.startswith("a "):
+                ann_path = cmd[2:].strip()
+                if not ann_path:
+                    print("Usage: a <annotation_path>")
+                    continue
+                if rollout_type != "policy" or not isinstance(policy, PolicyRollout):
+                    print("Annotation loading is only supported for policy rollouts.")
+                    continue
+                policy.load_annotation(ann_path)
+            else:
+                print(f"Unknown command: '{cmd}'. Use c / a <path> / r / q.")
+
     try:
         with _KeyPoll() as kp:
             reset_rollout(ri, policy)
+            # Enter intervention at startup so the user decides when to begin
+            result = _enter_intervention(kp, policy, rollout_type)
+            if result == "quit":
+                print("Quit requested.")
+                return
+            if result == "restart":
+                reset_rollout(ri, policy)
 
             while True:  # restartable
                 with RateLoop(frequency=frequency, verbose=True) as loop:
                     for step_i in loop:
                         ch = kp.getch()
-                        if ch == "q":
-                            print("Quit requested.")
-                            return
-                        if ch == "r":
-                            print("Restart requested.")
-                            reset_rollout(ri, policy)
-                            time.sleep(10.0)
-                            break  # restart RateLoop
+                        if ch is not None:
+                            # Any key press triggers intervention
+                            result = _enter_intervention(kp, policy, rollout_type)
+                            if result == "quit":
+                                print("Quit requested.")
+                                return
+                            elif result == "restart":
+                                print("Restart requested.")
+                                reset_rollout(ri, policy)
+                                result = _enter_intervention(kp, policy, rollout_type)
+                                if result == "quit":
+                                    return
+                                if result == "restart":
+                                    reset_rollout(ri, policy)
+                                break
+                            if hasattr(policy, "actions"):
+                                policy.actions = None
+                            break
 
                         actions = None
                         if rollout_type == "policy":
@@ -650,18 +744,13 @@ def main(
                             raise ValueError(f"Invalid rollout type: {rollout_type}")
 
                         if actions is None:
-                            print(
-                                "Finish rollout. Press 'r' to restart or 'q' to quit."
-                            )
-                            while True:
-                                ch2 = kp.getch()
-                                if ch2 == "q":
-                                    return
-                                if ch2 == "r":
-                                    reset_rollout(ri, policy)
-                                    time.sleep(10.0)
-                                    break
-                                time.sleep(0.01)
+                            print("Finish rollout.")
+                            reset_rollout(ri, policy)
+                            result = _enter_intervention(kp, policy, rollout_type)
+                            if result == "quit":
+                                return
+                            if result == "restart":
+                                reset_rollout(ri, policy)
                             break
 
                         if debug and rollout_type == "policy" and step_i % query_frequency == 0:
