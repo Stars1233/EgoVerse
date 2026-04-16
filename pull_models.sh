@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # ====== config (edit these) ======
-REMOTE_USER_HOST="paphiwetsa3@sky1.cc.gatech.edu"
-REMOTE_PATH="/coc/flash7/paphiwetsa3/projects/EgoVerse/logs/zarr/"
-LOCAL_PATH="./egomimic/robot/models/s3_resolver"
+REMOTE_USER_HOST="paphiwetsa3@login-phoenix.pace.gatech.edu"
+REMOTE_PATH="/storage/home/hcoda1/4/paphiwetsa3/r-dxu345-0/projects/EgoVerse/logs/pick_place/"
+LOCAL_PATH="./egomimic/robot/models/"
 # =================================
 
 mkdir -p "$LOCAL_PATH"
