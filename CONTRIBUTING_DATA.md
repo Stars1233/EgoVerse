@@ -54,12 +54,19 @@ Your raw data
 
 ### 2.1 Hardware
 
+EgoVerse is hardware-agnostic. Any egocentric camera with a SLAM system that provides 6-DOF pose tracking is supported. The minimum requirements are:
+
 | Item | Requirement |
 |---|---|
-| Egocentric camera | **Project Aria glasses, Profile 15** (mandatory). Profile 10 produces 10 fps SLAM which breaks action chunk generation. |
-| Hand tracking | Aria MPS hand-tracking output (`.json` / MPS bundle) at 30 fps |
-| Wrist cameras | Optional. ZED or RealSense. Include as `images.left_wrist` / `images.right_wrist` if present. |
+| Egocentric camera | Any camera worn or mounted on the head/torso providing a first-person RGB stream at ≥ 30 fps. Examples: Project Aria glasses, OAK-D, ZED Mini, RealSense T265, GoPro + external SLAM. |
+| SLAM / pose tracking | A system that outputs 6-DOF device pose in a consistent metric world frame at ≥ 30 fps, synchronized with the RGB stream. Examples: Aria MPS, ZED SDK positional tracking, ORB-SLAM3, OpenVINS, RealSense tracking firmware. |
+| Hand tracking | Per-frame 3D hand landmark estimates (21 keypoints per hand) synchronized to the RGB stream, expressed in the same SLAM world frame. Examples: Aria MPS hand tracking, MediaPipe + depth unprojection, OAK-D depthai hand tracker, Ultraleap. If your setup does not produce hand keypoints, omit `*.obs_keypoints` and `*.obs_wrist_pose` and use only `*.obs_ee_pose` (e.g. derived from a robot's FK or a wrist-worn IMU). |
+| Wrist cameras | Optional. Include as `images.left_wrist` / `images.right_wrist` if present. |
 | Robot | Any bimanual arm or single-arm platform. See §10 for embodiment identifiers. |
+
+**Minimum viable setup (no robot):** egocentric camera + SLAM + hand tracking → contributes `images.front_1`, `obs_head_pose`, `left/right.obs_ee_pose`, `left/right.obs_wrist_pose`, `left/right.obs_keypoints`.
+
+**If your SLAM system does not run at 30 fps**, ensure you upsample or interpolate pose tracks to match the RGB frame rate before writing. The training pipeline assumes all arrays are frame-aligned.
 
 ### 2.2 Software
 
@@ -237,12 +244,12 @@ Each episode is a **Zarr v3 group** (a directory ending in `.zarr`) containing a
 │   └── c/
 ├── left.obs_ee_pose/               ← left end-effector pose (required for bimanual)
 ├── right.obs_ee_pose/              ← right end-effector pose (required for bimanual)
-├── left.obs_wrist_pose/            ← left wrist pose (Aria: required)
-├── right.obs_wrist_pose/           ← right wrist pose (Aria: required)
-├── left.obs_keypoints/             ← left hand keypoints (Aria: required)
-├── right.obs_keypoints/            ← right hand keypoints (Aria: required)
-├── obs_head_pose/                  ← head/device pose (Aria: required)
-├── obs_eye_gaze/                   ← eye gaze direction (Aria: if available)
+├── left.obs_wrist_pose/            ← left wrist pose (required if hand tracking available)
+├── right.obs_wrist_pose/           ← right wrist pose (required if hand tracking available)
+├── left.obs_keypoints/             ← left hand keypoints (required if hand tracking available)
+├── right.obs_keypoints/            ← right hand keypoints (required if hand tracking available)
+├── obs_head_pose/                  ← egocentric device pose (required)
+├── obs_eye_gaze/                   ← eye gaze direction (if available)
 └── obs_rgb_timestamps_ns/          ← per-frame capture timestamps
 ```
 
@@ -258,22 +265,28 @@ All arrays are indexed along axis 0 by frame index. Every array must have **exac
 | `images.left_wrist` | `(T,)` of variable-length bytes | `VariableLengthBytes` | Optional. Include if wrist camera present. |
 | `images.right_wrist` | `(T,)` of variable-length bytes | `VariableLengthBytes` | Optional. Include if wrist camera present. |
 
-#### Poses (Bimanual Aria / Human)
+#### Egocentric Device Pose (all contributors)
 
 | Key | Shape | Dtype | Frame | Notes |
 |---|---|---|---|---|
-| `left.obs_ee_pose` | `(T, 7)` | `float64` | SLAM world frame | Left end-effector pose as XYZWXYZ; see §7 |
-| `right.obs_ee_pose` | `(T, 7)` | `float64` | SLAM world frame | Right end-effector pose as XYZWXYZ |
+| `obs_head_pose` | `(T, 7)` | `float64` | SLAM world frame | 6-DOF pose of the egocentric camera/device as XYZWXYZ; see §7. This is the pivot used at training time to re-express all other poses into head-relative coordinates. **Required for all contributors.** |
+
+#### Hand and Wrist Poses (if hand tracking is available)
+
+Provide these if your setup produces 3D hand estimates. Omit the entire key (do not write zeros) if not available.
+
+| Key | Shape | Dtype | Frame | Notes |
+|---|---|---|---|---|
+| `left.obs_ee_pose` | `(T, 7)` | `float64` | SLAM world frame | Left hand end-effector (fingertip centroid or palm center) pose as XYZWXYZ |
+| `right.obs_ee_pose` | `(T, 7)` | `float64` | SLAM world frame | Right hand end-effector pose as XYZWXYZ |
 | `left.obs_wrist_pose` | `(T, 7)` | `float64` | SLAM world frame | Left wrist origin pose as XYZWXYZ |
 | `right.obs_wrist_pose` | `(T, 7)` | `float64` | SLAM world frame | Right wrist origin pose as XYZWXYZ |
-| `obs_head_pose` | `(T, 7)` | `float64` | SLAM world frame | Aria device (camera) pose as XYZWXYZ |
+| `left.obs_keypoints` | `(T, 63)` | `float64` | SLAM world frame | 21 hand landmarks × 3 (x, y, z); flattened row-major (see ordering below) |
+| `right.obs_keypoints` | `(T, 63)` | `float64` | SLAM world frame | 21 hand landmarks × 3 (x, y, z); flattened row-major |
 
-#### Hand Keypoints (Aria)
+**If your system only provides wrist pose (not full keypoints)**, include `*.obs_wrist_pose` and `*.obs_ee_pose` and omit `*.obs_keypoints`.
 
-| Key | Shape | Dtype | Frame | Notes |
-|---|---|---|---|---|
-| `left.obs_keypoints` | `(T, 63)` | `float64` | SLAM world frame | 21 landmarks × 3 (x, y, z); flattened row-major |
-| `right.obs_keypoints` | `(T, 63)` | `float64` | SLAM world frame | 21 landmarks × 3 (x, y, z); flattened row-major |
+**If your system provides only a single aggregate hand pose** (e.g. palm center from a depth sensor), populate `*.obs_ee_pose` only.
 
 Keypoint ordering (21 landmarks):
 ```
@@ -286,7 +299,7 @@ Index 14-16:  ring (MCP, PIP, DIP)
 Index 17-19:  pinky (MCP, PIP, DIP)
 ```
 
-#### Robot Poses (Eva / ALOHA / Other Arms)
+#### Robot Arm Poses (if operating alongside a robot)
 
 | Key | Shape | Dtype | Notes |
 |---|---|---|---|
@@ -352,18 +365,20 @@ The `ZarrWriter` class handles chunking automatically. If writing manually:
 
 ### 6.1 SLAM World Frame (storage frame)
 
-All poses are stored in the **SLAM world frame** as produced by Aria MPS. This is an arbitrary fixed Euclidean frame that is consistent within a single recording session but **not** consistent across sessions.
+All poses are stored in the **SLAM world frame** produced by your pose-tracking system (e.g. Aria MPS, ZED SDK, ORB-SLAM3). This is an arbitrary fixed Euclidean frame that is consistent within a single recording session but **not** consistent across sessions or between different hardware setups.
 
-- Origin: defined by MPS at recording start; treat as opaque.
+- Origin: defined by the SLAM system at recording start; treat as opaque.
 - Axes: right-handed, metric (meters).
-- **This is what you write into the Zarr arrays.**
+- **This is what you write into the Zarr arrays.** Do not pre-transform poses to any other frame before writing.
+
+The SLAM world frame origin and orientation will differ between labs and hardware. That is expected and fine — the training-time head-frame normalization (§6.2) cancels out any global offset or rotation.
 
 ### 6.2 Head Frame (training frame)
 
-At training time, the pipeline automatically re-expresses all poses **relative to the current head/device pose** using `ActionChunkCoordinateFrameTransform`. You do **not** need to do this conversion yourself; it is applied on-the-fly by the data loader.
+At training time, the pipeline automatically re-expresses all poses **relative to the current egocentric device pose** (`obs_head_pose`) using `ActionChunkCoordinateFrameTransform`. You do **not** need to do this conversion yourself; it is applied on-the-fly by the data loader.
 
 The head frame is:
-- Origin: the Aria device (camera) center at the current timestep.
+- Origin: the egocentric camera/device center at the current timestep.
 - +Z: forward (into the scene from the camera).
 - +X: right.
 - +Y: up.
@@ -409,7 +424,7 @@ All 6-DOF poses are stored as a **7-element float64 vector**:
 | 5 | qy | Quaternion j-component |
 | 6 | qz | Quaternion k-component |
 
-**Important:** The quaternion uses **scalar-first** order (`w, x, y, z`), which is the convention used by `projectaria_tools.core.sophus.SE3` and `scipy.spatial.transform.Rotation.from_quat([x, y, z, w])` with an index swap. The quaternion must be **unit-norm**: `sqrt(qw² + qx² + qy² + qz²) == 1.0`.
+**Important:** The quaternion uses **scalar-first** order (`w, x, y, z`). This matches the convention used by `projectaria_tools.core.sophus.SE3`. Note that `scipy.spatial.transform.Rotation` uses scalar-last (`x, y, z, w`) by default — use the helpers below to convert. The quaternion must be **unit-norm**: `sqrt(qw² + qx² + qy² + qz²) == 1.0`.
 
 **Conversion helpers:**
 ```python
@@ -435,7 +450,9 @@ Some robot embodiments store commanded actions as `[tx, ty, tz, yaw, pitch, roll
 
 ### 7.3 Confidence Filtering
 
-Aria MPS hand poses include a per-frame confidence value. **Filter out frames with confidence below the minimum threshold** before writing. Frames with low-confidence poses cause SVD convergence errors in the coordinate frame transforms.
+Many hand-tracking systems produce a per-frame confidence or quality score alongside each pose estimate. **Filter out frames below your system's minimum reliable confidence threshold before writing.** Low-confidence poses (near-zero or degenerate quaternions) cause SVD convergence errors in the coordinate frame transforms at training time.
+
+If your system does not provide a confidence score, apply a basic sanity check: reject any frame where the quaternion norm deviates from 1.0 by more than 1e-3, or where the translation jumps by more than a physically plausible amount between consecutive frames (e.g. > 0.5 m in a single timestep at 30 fps).
 
 ---
 
@@ -452,7 +469,7 @@ Aria MPS hand poses include a per-frame confidence value. **Filter out frames wi
 | Zarr dtype | `VariableLengthBytes` (Zarr v3 `vlen-bytes`) |
 | Codec stack | `sharding_indexed` → `vlen-bytes` → `zstd(level=0)` |
 
-`images.front_1` must be 480×640 (height × width) for Aria data. Other cameras may differ; record the actual shape in `features["images.front_1"]["shape"]`.
+There is no fixed resolution requirement. Record the actual frame dimensions in `features["images.front_1"]["shape"]` (e.g. `[480, 640, 3]`). All frames in a given episode must have the same resolution. Common resolutions: 480×640 (Aria), 720×1280, 1080×1920. If your camera produces non-standard aspect ratios, do not crop or pad — write as-is and document the shape in `features`.
 
 ### 8.2 Writing Images
 
@@ -965,7 +982,8 @@ Complete every item before considering an episode ready for upload.
 - [ ] `total_frames` in `zarr.attrs` equals the actual number of valid frames.
 - [ ] All arrays have at least `total_frames` entries along axis 0.
 - [ ] `images.front_1` is present and all frames decode successfully.
-- [ ] `left.obs_ee_pose`, `right.obs_ee_pose`, `obs_head_pose` are present (bimanual Aria).
+- [ ] `obs_head_pose` is present (required for all contributors).
+- [ ] `left.obs_ee_pose` and `right.obs_ee_pose` are present if hand tracking is available.
 - [ ] All `obs_ee_pose` arrays have shape `(T, 7)` and unit-norm quaternions.
 - [ ] All `obs_keypoints` arrays have shape `(T, 63)`.
 - [ ] `features` dict in `zarr.attrs` has one entry per array key.
