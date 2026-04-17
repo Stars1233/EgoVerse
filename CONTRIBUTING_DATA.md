@@ -28,7 +28,7 @@
 
 ## 1. Overview
 
-EgoVerse is a multi-lab egocentric human demonstration dataset for robot co-training. The data schema sits **on top of LeRobot v3** and is used as the official H2R (Human-to-Robot) metadata standard.
+EgoVerse is a multi-lab egocentric human demonstration dataset for robot co-training. The primary storage and training format is **EgoVerse's own Zarr v3 schema** — a custom, S3-native per-episode format described in full in this guide. It is used as the official H2R (Human-to-Robot) metadata standard.
 
 Every contributed episode must satisfy three contracts:
 
@@ -240,6 +240,12 @@ Each episode is a **Zarr v3 group** (a directory ending in `.zarr`) containing a
 │   ├── zarr.json
 │   └── c/                          ← chunk data
 ├── images.front_1/                 ← egocentric RGB frames (required)
+│   ├── zarr.json
+│   └── c/
+├── images.left_wrist/              ← left wrist camera RGB frames (optional)
+│   ├── zarr.json
+│   └── c/
+├── images.right_wrist/             ← right wrist camera RGB frames (optional)
 │   ├── zarr.json
 │   └── c/
 ├── left.obs_ee_pose/               ← left end-effector pose (required for bimanual)
