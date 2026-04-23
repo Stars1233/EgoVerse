@@ -10,6 +10,7 @@ python egomimic/scripts/language_process/scale_to_zarr_annotation_parallel.py \
 --dataset-config-path egomimic/hydra_configs/data/eva_pi_lang.yaml \
 --conversion-mode pick_place_llm \
 --prompt-filepath egomimic/scripts/language_process/prompt.txt \
+--augment-prompt-filepath egomimic/scripts/language_process/augment_prompt.txt \
 --project-name "dense-language"
 """
 
@@ -48,14 +49,23 @@ def _download_annotation(scale_api_key: str, tid: str, out_path: str):
         json.dump(raw, f, indent=2)
 
 
-def _make_converter(conversion_mode: str, annotation_dir: str, prompt_filepath: str):
+def _make_converter(
+    conversion_mode: str,
+    annotation_dir: str,
+    prompt_filepath: str,
+    augment_prompt_filepath: str | None = None,
+):
     from egomimic.scripts.language_process.converter import (
         HardCodedConverter,
         PickPlaceLLMConverter,
     )
 
     if conversion_mode == "pick_place_llm":
-        return PickPlaceLLMConverter(annotation_dir, prompt_filepath)
+        return PickPlaceLLMConverter(
+            annotation_dir,
+            prompt_filepath,
+            augment_prompt_filepath=augment_prompt_filepath,
+        )
     elif conversion_mode == "hardcoded":
         return HardCodedConverter(annotation_dir)
     raise ValueError(f"Invalid conversion mode: {conversion_mode}")
@@ -70,6 +80,7 @@ def process_episode(
     scale_annotation_dir: str,
     conversion_mode: str,
     prompt_filepath: str,
+    augment_prompt_filepath: str | None = None,
 ) -> str:
     """
     Self-contained Ray task: download, convert, and write one episode's annotations.
@@ -79,7 +90,12 @@ def process_episode(
 
     _download_annotation(scale_api_key, tid, scale_annotation_dir)
 
-    converter = _make_converter(conversion_mode, scale_annotation_dir, prompt_filepath)
+    converter = _make_converter(
+        conversion_mode,
+        scale_annotation_dir,
+        prompt_filepath,
+        augment_prompt_filepath=augment_prompt_filepath,
+    )
     annotation = converter.convert(tid)
 
     writer = ZarrWriter(episode_path=episode_path, verbose=True)
@@ -130,6 +146,7 @@ if __name__ == "__main__":
         "-s", "--scale-api-key", default=os.environ.get("SCALE_API_KEY", "")
     )
     parser.add_argument("--prompt-filepath", type=str, required=True)
+    parser.add_argument("--augment-prompt-filepath", type=str, default=None)
     parser.add_argument(
         "--ray-address",
         default=None,
@@ -209,6 +226,7 @@ if __name__ == "__main__":
             scale_annotation_dir=args.scale_annotation_dir,
             conversion_mode=args.conversion_mode,
             prompt_filepath=args.prompt_filepath,
+            augment_prompt_filepath=args.augment_prompt_filepath,
         )
         pending[ref] = ep_hash
 
