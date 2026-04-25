@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Exports a merged PR's diff, review comments, and metadata to pr_export.json.
+On PR merge: exports full diff + review comments to raw/prs/pr-NNNN-diff.json
+and pushes directly to the Obsidian vault via GitHub Contents API.
+
 Copy to: EgoVerse/.github/scripts/export_pr.py
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -11,38 +14,60 @@ from datetime import datetime
 
 import requests
 
+VAULT_API = "https://api.github.com/repos/{repo}/contents/{path}"
+
+
+def gh_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+
+def vault_headers(pat: str) -> dict:
+    return {
+        "Authorization": f"Bearer {pat}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
 
 def get_pr_comments(repo: str, pr_number: int, token: str) -> list[dict]:
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
-    resp = requests.get(url, headers=headers)
+    resp = requests.get(url, headers=gh_headers(token))
     resp.raise_for_status()
     return [
-        {
-            "author": c["user"]["login"],
-            "body": c["body"],
-            "path": c["path"],
-            "line": c.get("line"),
-            "created_at": c["created_at"],
-        }
+        {"author": c["user"]["login"], "body": c["body"],
+         "path": c["path"], "line": c.get("line"), "created_at": c["created_at"]}
         for c in resp.json()
     ]
 
 
 def get_pr_reviews(repo: str, pr_number: int, token: str) -> list[dict]:
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-    resp = requests.get(url, headers=headers)
+    resp = requests.get(url, headers=gh_headers(token))
     resp.raise_for_status()
     return [
-        {
-            "author": r["user"]["login"],
-            "state": r["state"],
-            "body": r["body"],
-            "submitted_at": r["submitted_at"],
-        }
+        {"author": r["user"]["login"], "state": r["state"],
+         "body": r["body"], "submitted_at": r["submitted_at"]}
         for r in resp.json()
     ]
+
+
+def push_to_vault(repo: str, path: str, content: str, message: str, pat: str):
+    headers = vault_headers(pat)
+    url = VAULT_API.format(repo=repo, path=path)
+    sha = None
+    resp = requests.get(url, headers=headers)
+    if resp.status_code == 200:
+        sha = resp.json()["sha"]
+    payload = {
+        "message": message,
+        "content": base64.b64encode(content.encode()).decode(),
+        "branch": "main",
+    }
+    if sha:
+        payload["sha"] = sha
+    resp = requests.put(url, headers=headers, json=payload)
+    resp.raise_for_status()
+    print(f"Pushed: {path}")
 
 
 def main():
@@ -50,15 +75,13 @@ def main():
     base_sha = os.environ["BASE_SHA"]
     head_sha = os.environ["HEAD_SHA"]
     token = os.environ["GH_TOKEN"]
+    vault_pat = os.environ["VAULT_PAT"]
+    vault_repo = os.environ["OBSIDIAN_VAULT_REPO"]
     repo = os.environ.get("GITHUB_REPOSITORY", "GaTech-RL2/EgoVerse")
 
-    # Get diff
     diff = subprocess.check_output(
-        ["git", "diff", f"{base_sha}...{head_sha}"],
-        text=True,
+        ["git", "diff", f"{base_sha}...{head_sha}"], text=True
     )
-
-    # Truncate diff if huge
     if len(diff) > 200_000:
         diff = diff[:200_000] + "\n... [truncated]"
 
@@ -78,11 +101,13 @@ def main():
         "exported_at": datetime.utcnow().isoformat(),
     }
 
-    filename = f"pr_{pr_number:04d}_{datetime.utcnow().strftime('%Y%m%d')}.json"
-    with open("pr_export.json", "w") as f:
-        json.dump(export, f, indent=2)
-
-    print(f"Exported PR #{pr_number} to pr_export.json ({len(diff)} chars of diff)")
+    path = f"raw/prs/pr-{pr_number:04d}-diff.json"
+    push_to_vault(
+        vault_repo, path,
+        json.dumps(export, indent=2),
+        f"raw: export merged PR #{pr_number} diff — {export['title']}",
+        vault_pat,
+    )
 
 
 if __name__ == "__main__":

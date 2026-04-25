@@ -1,13 +1,13 @@
 # Tracks every PR in the EgoVerse wiki (wiki/prs/pr-NNNN.md).
-# Supersedes pr-wiki-ingest.yml.
 #
 # Copy to: EgoVerse/.github/workflows/pr-tracker.yml
 #
 # Events:
-#   opened / ready_for_review → create stub wiki page (status: open)
-#   closed (not merged)       → update wiki page     (status: closed)
-#   closed (merged)           → update wiki page     (status: merged)
-#                               + export full JSON to raw/prs/
+#   opened / ready_for_review → raw/prs/pr-NNNN.json (metadata)
+#                               wiki/prs/pr-NNNN.md   (clean stub, status: open)
+#   closed (no merge)         → updates both to status: closed
+#   closed (merged)           → updates both to status: merged
+#                               + raw/prs/pr-NNNN-diff.json (full diff + comments)
 #
 # Required secrets (EgoVerse repo settings):
 #   VAULT_PAT           — GitHub PAT with repo scope on egoverse-obsidian
@@ -51,7 +51,7 @@ jobs:
             echo "value=open" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create or update wiki page
+      - name: Save raw metadata + update wiki stub
         env:
           VAULT_PAT: ${{ secrets.VAULT_PAT }}
           OBSIDIAN_VAULT_REPO: ${{ secrets.OBSIDIAN_VAULT_REPO }}
@@ -63,11 +63,12 @@ jobs:
           PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
         run: python .github/scripts/create_wiki_pr_page.py
 
-      # Export full diff + comments to raw/prs/ on merge only
-      - name: Export PR JSON
+      - name: Export full diff to vault (merge only)
         if: github.event.pull_request.merged == true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VAULT_PAT: ${{ secrets.VAULT_PAT }}
+          OBSIDIAN_VAULT_REPO: ${{ secrets.OBSIDIAN_VAULT_REPO }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -77,17 +78,3 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python .github/scripts/export_pr.py
-
-      - name: Push JSON to vault
-        if: github.event.pull_request.merged == true
-        uses: dmnemec/copy_file_to_another_repo_action@main
-        env:
-          API_TOKEN_GITHUB: ${{ secrets.VAULT_PAT }}
-        with:
-          source_file: "pr_export.json"
-          destination_repo: ${{ secrets.OBSIDIAN_VAULT_REPO }}
-          destination_folder: "raw/prs"
-          destination_branch: "main"
-          user_email: "github-actions@github.com"
-          user_name: "EgoVerse Bot"
-          commit_message: "chore: export merged PR #${{ github.event.pull_request.number }} — ${{ github.event.pull_request.title }}"
