@@ -1,0 +1,93 @@
+# Tracks every PR in the EgoVerse wiki (wiki/prs/pr-NNNN.md).
+# Supersedes pr-wiki-ingest.yml.
+#
+# Copy to: EgoVerse/.github/workflows/pr-tracker.yml
+#
+# Events:
+#   opened / ready_for_review → create stub wiki page (status: open)
+#   closed (not merged)       → update wiki page     (status: closed)
+#   closed (merged)           → update wiki page     (status: merged)
+#                               + export full JSON to raw/prs/
+#
+# Required secrets (EgoVerse repo settings):
+#   VAULT_PAT           — GitHub PAT with repo scope on egoverse-obsidian
+#   OBSIDIAN_VAULT_REPO — "GaTech-RL2/egoverse-obsidian"
+
+name: PR Wiki Tracker
+
+on:
+  pull_request:
+    types: [opened, closed, ready_for_review]
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Resolve PR status
+        id: status
+        run: |
+          if [[ "${{ github.event.action }}" == "closed" && "${{ github.event.pull_request.merged }}" == "true" ]]; then
+            echo "value=merged" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.action }}" == "closed" ]]; then
+            echo "value=closed" >> $GITHUB_OUTPUT
+          else
+            echo "value=open" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or update wiki page
+        env:
+          VAULT_PAT: ${{ secrets.VAULT_PAT }}
+          OBSIDIAN_VAULT_REPO: ${{ secrets.OBSIDIAN_VAULT_REPO }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_STATUS: ${{ steps.status.outputs.value }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: python .github/scripts/create_wiki_pr_page.py
+
+      # Export full diff + comments to raw/prs/ on merge only
+      - name: Export PR JSON
+        if: github.event.pull_request.merged == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python .github/scripts/export_pr.py
+
+      - name: Push JSON to vault
+        if: github.event.pull_request.merged == true
+        uses: dmnemec/copy_file_to_another_repo_action@main
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.VAULT_PAT }}
+        with:
+          source_file: "pr_export.json"
+          destination_repo: ${{ secrets.OBSIDIAN_VAULT_REPO }}
+          destination_folder: "raw/prs"
+          destination_branch: "main"
+          user_email: "github-actions@github.com"
+          user_name: "EgoVerse Bot"
+          commit_message: "chore: export merged PR #${{ github.event.pull_request.number }} — ${{ github.event.pull_request.title }}"
