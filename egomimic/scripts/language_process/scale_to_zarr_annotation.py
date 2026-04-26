@@ -5,6 +5,7 @@ python egomimic/scripts/language_process/scale_to_zarr_annotation.py \
 --dataset-config-path egomimic/hydra_configs/data/eva_pi_lang.yaml \
 --conversion-mode pick_place_llm \
 --prompt-filepath egomimic/scripts/language_process/prompt.txt \
+--augment-prompt-filepath egomimic/scripts/language_process/augment_prompt.txt \
 --project-name "dense-language"
 """
 
@@ -69,6 +70,7 @@ if __name__ == "__main__":
         "-s", "--scale-api-key", default=os.environ.get("SCALE_API_KEY", "")
     )
     parser.add_argument("--prompt-filepath", type=str, required=True)
+    parser.add_argument("--augment-prompt-filepath", type=str, default=None)
     args = parser.parse_args()
 
     os.makedirs(args.scale_annotation_dir, exist_ok=True)
@@ -116,7 +118,9 @@ if __name__ == "__main__":
     # instantiate converter
     if args.conversion_mode == "pick_place_llm":
         converter = PickPlaceLLMConverter(
-            args.scale_annotation_dir, args.prompt_filepath
+            args.scale_annotation_dir,
+            args.prompt_filepath,
+            augment_prompt_filepath=args.augment_prompt_filepath,
         )
     elif args.conversion_mode == "hardcoded":
         converter = HardCodedConverter(args.scale_annotation_dir)
