@@ -186,7 +186,7 @@ class PI(Algo):
                 "tokenized_mask",
                 "token_loss_mask",
                 "token_ar_mask",
-                "annotations",
+                "sampled_prompt",
             ):
                 if tk in _batch:
                     processed_batch[embodiment_id][tk] = _batch[tk]
