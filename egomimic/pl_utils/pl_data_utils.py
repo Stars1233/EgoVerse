@@ -300,11 +300,12 @@ def build_tokenized_collate(
             prompts = []
             for sample in annotation[annotation_key]:
                 if len(sample) == 0:
-                    prompts.append(default_prompt)
+                    sampled_prompt = default_prompt
                 elif sampling_mode == "random":
-                    prompts.append(sample[random.randint(0, len(sample) - 1)])
+                    sampled_prompt = sample[random.randint(0, len(sample) - 1)]
                 elif sampling_mode == "first":
-                    prompts.append(sample[0])
+                    sampled_prompt = sample[0]
+                prompts.append(sampled_prompt)
 
         list_keys = _extract_list_keys(batch)
 
@@ -317,7 +318,7 @@ def build_tokenized_collate(
         )
 
         collated = default_collate(batch)
-        collated.update(annotation)
+        collated["sampled_prompt"] = prompts
         collated.update(list_keys)
         attention_mask = enc["attention_mask"].bool()
         token_loss_mask = attention_mask.clone()

@@ -36,7 +36,7 @@ valid_datasets:
       project_name: "dense-language"
       filter_lambdas:
         - "lambda row: (row['robot_name'] == 'eva_bimanual') & (row['task'] == 'pick_place') & (row['zarr_processed_path'] != '')"
-    mode: train
+    mode: valid 
     valid_ratio: 0.05
 
 use_tokenizer: true
