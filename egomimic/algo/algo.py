@@ -36,6 +36,9 @@ class Algo:
     def forward_eval(self, batch):
         """
         Compute forward pass and return network outputs in @predictions dict.
+        This is the only eval-time entry point the model is expected to expose;
+        all metric computation and visualization is performed by Eval classes
+        on top of these predictions.
         Args:
             batch (dict): dictionary with torch.Tensors sampled
                 from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
@@ -43,30 +46,6 @@ class Algo:
             predictions (dict): {ac_key: torch.Tensor (B, Seq, D)}
         """
         raise NotImplementedError("Must implement forward_eval in subclass")
-
-    def forward_eval_logging(self, batch):
-        """
-        Called by pl_model to generate a dictionary of metrics and an image visualization
-        Args:
-            batch (dict): dictionary with torch.Tensors sampled
-                from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
-        Returns:
-            metrics (dict):
-                metricname: value (float)
-            image: (B, 3, H, W)
-        """
-        raise NotImplementedError("Must implement forward_eval_logging in subclass")
-
-    def visualize_preds(self, predictions, batch):
-        """
-        Helper function to visualize predictions on top of images
-        Args:
-            preds (dict): {ac_key: torch.Tensor (B, Seq, D)}
-            batch (dict): {ac_key: torch.Tensor (B, Seq, D), front_img_1: torch.Tensor (B, 3, H, W)}
-        Returns:
-            ims (np.ndarray): (B, H, W, 3) - images with actions drawn on top
-        """
-        raise NotImplementedError("Must implement visualize_preds in subclass")
 
     def compute_losses(self, predictions, batch):
         """

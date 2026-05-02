@@ -4,15 +4,12 @@ Implementation of Action Chunking with Transformers (ACT).
 
 from collections import OrderedDict
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from overrides import override
-from torchmetrics import MeanSquaredError
 
 from egomimic.algo.algo import Algo
-from egomimic.utils.egomimicUtils import draw_actions
 
 
 class ACTModel(nn.Module):
@@ -367,90 +364,6 @@ class ACT(Algo):
         )
 
         return unnorm_preds
-
-    @override
-    def forward_eval_logging(self, batch):
-        """
-        Called by pl_model to generate a dictionary of metrics and an image visualization
-        Args:
-            batch (dict): dictionary with torch.Tensors sampled
-                from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
-        Returns:
-            metrics (dict):
-                metricname: value (float)
-            image: (B, 3, H, W)
-        """
-        # forward_eval will unnormalize predictions
-        preds = self.forward_eval(batch)
-        # Must unnormalize ground truth as well bc this data came from @process_batch_for_training
-        batch = self.data_schematic.unnormalize_data(batch, self.embodiment_id)
-
-        metrics = {}
-        mse = MeanSquaredError()
-        for ac_key in self.data_schematic.keys_of_type("action_keys"):
-            if len(preds[ac_key].shape) != 3:
-                raise ValueError("predictions should be (B, Seq, D)")
-            metrics[f"Valid/{ac_key}_paired_mse_avg"] = mse(
-                preds[ac_key].cpu(), batch[ac_key].cpu()
-            )
-            metrics[f"Valid/{ac_key}_final_mse_avg"] = mse(
-                preds[ac_key][:, -1].cpu(), batch[ac_key][:, -1].cpu()
-            )
-
-        ims = {self.embodiment_id: self.visualize_preds(preds, batch)}
-
-        return metrics, ims
-
-    @override
-    def visualize_preds(self, predictions, batch):
-        """
-        Helper function to visualize predictions on top of images
-        Args:
-            preds (dict): {ac_key: torch.Tensor (B, Seq, D)}
-            batch (dict): {ac_key: torch.Tensor (B, Seq, D), front_img_1: torch.Tensor (B, 3, H, W)}
-        Returns:
-            ims (np.ndarray): (B, H, W, 3) - images with actions drawn on top
-        """
-        ims = (
-            batch[self.data_schematic.viz_img_key()[self.embodiment_id]]
-            .cpu()
-            .numpy()
-            .transpose((0, 2, 3, 1))
-            * 255
-        ).astype(np.uint8)
-        preds = predictions[self.data_schematic.action_keys()[0]]
-        gt = batch[self.data_schematic.action_keys()[0]]
-
-        for b in range(ims.shape[0]):
-            if preds.shape[-1] == 7 or preds.shape[-1] == 14:
-                ac_type = "joints"
-            elif preds.shape[-1] == 3 or preds.shape[-1] == 6:
-                ac_type = "xyz"
-            else:
-                raise ValueError(f"Unknown action type with shape {preds.shape}")
-
-            arm = "right" if preds.shape[-1] == 7 or preds.shape[-1] == 3 else "both"
-            ims[b] = draw_actions(
-                ims[b],
-                ac_type,
-                "Purples",
-                preds[b].cpu().numpy(),
-                self.camera_transforms.extrinsics,
-                self.camera_transforms.intrinsics,
-                arm=arm,
-            )
-
-            ims[b] = draw_actions(
-                ims[b],
-                ac_type,
-                "Greens",
-                gt[b].cpu().numpy(),
-                self.camera_transforms.extrinsics,
-                self.camera_transforms.intrinsics,
-                arm=arm,
-            )
-
-        return ims
 
     @override
     def compute_losses(self, predictions, batch):

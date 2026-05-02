@@ -8,7 +8,7 @@ defaults:
   - data: eva
   - callbacks: checkpoints
   - data_schematic: default
-  - evaluator: eval_video
+  - evaluator: eval_hpt
   - override hydra/launcher: submitit
   - _self_
 

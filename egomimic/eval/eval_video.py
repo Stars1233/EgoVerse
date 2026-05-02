@@ -1,4 +1,5 @@
 import os
+from abc import abstractmethod
 
 import torch
 import torchvision.io as tvio
@@ -8,6 +9,12 @@ from egomimic.rldb.embodiment.embodiment import get_embodiment
 
 
 class EvalVideo(Eval):
+    """
+    Base evaluator that buffers per-embodiment frames and writes them out as
+    validation videos. Subclasses implement `compute_metrics_and_viz` to compute
+    model-specific metrics and produce the frames to buffer.
+    """
+
     def __init__(self):
         super().__init__()
         self.trainer = None
@@ -26,6 +33,20 @@ class EvalVideo(Eval):
 
     def video_dir(self):
         return os.path.join(self.root_dir(), "videos")
+
+    @abstractmethod
+    def compute_metrics_and_viz(self, batch):
+        """
+        Run the model's eval forward and compute metrics and visualization frames.
+
+        Args:
+            batch (dict): processed batch produced by the algo's
+                `process_batch_for_training`.
+        Returns:
+            metrics (dict[str, torch.Tensor | float])
+            images_dict (dict[embodiment_id, np.ndarray (B, H, W, 3)])
+        """
+        raise NotImplementedError
 
     def on_validation_start(self):
         if self.trainer.is_global_zero:
@@ -58,7 +79,7 @@ class EvalVideo(Eval):
             self.val_image_buffer[key] = []
 
     def on_validation_step(self, batch, batch_idx, dataloader_idx=0):
-        metrics, images_dict = self.model.forward_eval_logging(batch)
+        metrics, images_dict = self.compute_metrics_and_viz(batch)
 
         device = self.trainer.lightning_module.device
         metrics = {

@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 from openpi.shared.image_tools import resize_with_pad_torch
 from overrides import override
-from torchmetrics import MeanSquaredError
 
 from egomimic.algo.algo import Algo
 from egomimic.models.preprocess_pi_obs import (
@@ -319,56 +318,6 @@ class PI(Algo):
                     unnorm_preds[f"{embodiment_name}_{key}"] = unnorm_actions[key]
 
         return unnorm_preds
-
-    @override
-    def forward_eval_logging(self, batch):
-        """
-        Called by pl_model to generate a dictionary of metrics and an image visualization
-        Args:
-            batch (dict): dictionary with torch.Tensors sampled
-                from a data loader and filtered by @process_batch_for_training (see docstring for expected keys/shapes)
-        Returns:
-            metrics (dict):
-                metricname: value (float)
-            image: (B, 3, H, W)
-        """
-        preds = self.forward_eval(batch)
-        metrics = {}
-        images_dict = {}
-        mse = MeanSquaredError()
-        for embodiment_id, _batch in batch.items():
-            _batch = self.data_schematic.unnormalize_data(_batch, embodiment_id)
-            embodiment_name = get_embodiment(embodiment_id).lower()
-            ac_key = self.ac_keys[embodiment_id]
-            pred_key = f"{embodiment_name}_{ac_key}"
-            if pred_key in preds:
-                metrics[f"Valid/{pred_key}_paired_mse_avg"] = mse(
-                    preds[pred_key].cpu(), _batch[ac_key].cpu()
-                )
-                metrics[f"Valid/{pred_key}_final_mse_avg"] = mse(
-                    preds[pred_key][:, -1].cpu(), _batch[ac_key][:, -1].cpu()
-                )
-
-            ims = self.visualize_preds(preds, _batch)
-            images_dict[embodiment_id] = ims
-        return metrics, images_dict
-
-    @override
-    def visualize_preds(self, predictions, batch):
-        """
-        Helper function to visualize predictions on top of images
-        Args:
-            predictions (dict): {ac_key: torch.Tensor (B, Seq, D)}
-            batch (dict): {ac_key: torch.Tensor (B, Seq, D), front_img_1: torch.Tensor (B, 3, H, W), embodiment: torch.Tensor (1)}
-        Returns:
-            ims (np.ndarray): (B, H, W, 3) - images with actions drawn on top
-        """
-        if self.viz_func is None:
-            raise ValueError("viz_func is not set")
-        embodiment_id = batch["embodiment"][0].item()
-        embodiment_name = get_embodiment(embodiment_id).lower()
-
-        return self.viz_func[embodiment_name](predictions, batch)
 
     @override
     def compute_losses(self, predictions, batch):
