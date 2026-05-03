@@ -26,7 +26,11 @@ from egomimic.scripts.language_process.converter import (
 from egomimic.utils.scale_utils import (
     build_df_from_tasks,
     download_scale_annotation,
+    get_available_hashes,
+    get_episode_hash_to_tid,
     get_tasks,
+    get_tid_to_episode_hash,
+    load_scale_annotation_csv,
 )
 
 
@@ -36,23 +40,6 @@ def download_scale_annotation_csv(dest_path: str):
     pull_csv_script = os.path.join(script_dir, "pull_csv.sh")
     run(["bash", pull_csv_script, r2_path, dest_path], check=True)
     return os.path.join(dest_path, "Dense_Language_Tasks_2026_03_31.csv")
-
-
-def load_scale_annotation_csv(csv_path: str):
-    return pd.read_csv(csv_path)
-
-
-def get_available_hashes(df: pd.DataFrame):
-    df = df[df["STATUS"] == "completed"]
-    return df["SEQUENCE_ID"].unique().tolist()
-
-
-def get_tid_to_episode_hash(df: pd.DataFrame, tid: str):
-    return df[df["_ID"] == tid]["SEQUENCE_ID"].values[0]
-
-
-def get_episode_hash_to_tid(df: pd.DataFrame, episode_hash: str):
-    return df[df["SEQUENCE_ID"] == episode_hash]["_ID"].values[0]
 
 
 if __name__ == "__main__":
