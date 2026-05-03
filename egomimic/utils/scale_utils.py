@@ -6,6 +6,11 @@ import pandas as pd
 import requests
 from scaleapi import ScaleClient
 
+# Column name in the Scale annotation CSV that stores episode hashes
+_SEQUENCE_ID_COL = "SEQUENCE_ID"
+_STATUS_COL = "STATUS"
+_ID_COL = "_ID"
+
 REQUEST_TIMEOUT_S = 60
 
 
@@ -131,3 +136,48 @@ def get_completed_tasks(project_name: str, api_key: str) -> list[dict[str, Any]]
             break
 
     return tasks
+
+
+# ---------------------------------------------------------------------------
+# Annotation CSV helpers
+# ---------------------------------------------------------------------------
+
+def load_scale_annotation_csv(csv_path: str) -> pd.DataFrame:
+    return pd.read_csv(csv_path)
+
+
+def get_available_hashes(df: pd.DataFrame) -> list[str]:
+    """Return episode hashes that have a completed Scale annotation."""
+    return df[df[_STATUS_COL] == "completed"][_SEQUENCE_ID_COL].unique().tolist()
+
+
+def get_tid_to_episode_hash(df: pd.DataFrame, tid: str) -> str:
+    """Return the episode hash for a given Scale task ID."""
+    return df[df[_ID_COL] == tid][_SEQUENCE_ID_COL].values[0]
+
+
+def get_episode_hash_to_tid(df: pd.DataFrame, episode_hash: str) -> str:
+    """Return the Scale task ID for a given episode hash."""
+    return df[df[_SEQUENCE_ID_COL] == episode_hash][_ID_COL].values[0]
+
+
+def filter_df_annotations(
+    episode_df: pd.DataFrame,
+    project_name: str,
+    api_key: str | None = None,
+) -> pd.DataFrame:
+    """Filter a SQL episode DataFrame to rows that have a completed Scale annotation.
+
+    Args:
+        episode_df: DataFrame from episode_table_to_df(engine).
+        project_name: Scale project name to fetch completed tasks from.
+        api_key: Scale API key. Defaults to SCALE_API_KEY env var.
+
+    Returns:
+        Subset of episode_df whose episode_hash has a completed Scale annotation.
+    """
+    api_key = api_key or os.environ["SCALE_API_KEY"]
+    tasks = get_completed_tasks(project_name, api_key)
+    annotation_df = build_df_from_tasks(tasks)
+    available = set(get_available_hashes(annotation_df))
+    return episode_df[episode_df["episode_hash"].isin(available)].reset_index(drop=True)

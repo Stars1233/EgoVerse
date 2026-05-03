@@ -25,8 +25,10 @@ import requests
 from scaleapi import ScaleClient
 
 from egomimic.scripts.language_process.scale_to_zarr_annotation import (
-    build_df_from_tasks,
     download_scale_annotation_csv,
+)
+from egomimic.utils.scale_utils import (
+    build_df_from_tasks,
     get_available_hashes,
     get_episode_hash_to_tid,
     get_tasks,
