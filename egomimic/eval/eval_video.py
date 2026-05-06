@@ -15,7 +15,7 @@ class EvalVideo(Eval):
     model-specific metrics and produce the frames to buffer.
     """
 
-    def __init__(self):
+    def __init__(self, limit_val_batches: int = 400):
         super().__init__()
         self.trainer = None
         self.model = None
@@ -24,7 +24,7 @@ class EvalVideo(Eval):
         self.override_dict = {
             "strategy": "ddp_find_unused_parameters_true",
             "limit_train_batches": 0,
-            "limit_val_batches": 400,
+            "limit_val_batches": limit_val_batches,
             "check_val_every_n_epoch": 1,
             "profiler": "simple",
             "max_epochs": 1,

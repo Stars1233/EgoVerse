@@ -69,6 +69,25 @@ sampling_mode: "random"
 annotation_key: null
 default_prompt: ""
 
+# pi0.5-style proprio-in-prompt. When `discrete_state_input: true`, the
+# canonical concat key produced by each embodiment's transform_list
+# (`observations.state.ee_pose`) is read as the proprio vector, clipped to
+# [-1, 1], discretized into `state_num_bins` bins, and spliced into the
+# prompt before tokenization. Per-arm zarr keys are deleted by ConcatKeys
+# in the transform_list and are NOT available at collate time. The collate
+# defaults to ["observations.state.ee_pose"]; override `proprio_keys` here
+# only if you need a different source (e.g. keypoints mode). State is
+# assumed normalized to [-1, 1] upstream — values outside that range are
+# clipped, so confirm norm_stats is populated before training.
+discrete_state_input: true
+state_num_bins: 256
+# "original" → "Task: ..., State: ...;\nAction: " (openpi pi0.5 default)
+# "specific" → adds "Embodiment: ..." and "Control mode: ..." descriptors;
+#              Aria omits the gripper part of the control-mode string.
+# "language" → no State block, tokenize the raw prompt only (pre-pi0.5
+#              behaviour); takes precedence over discrete_state_input.
+proprio_mode: original
+
 train_dataloader_params:
   eva_bimanual:
     batch_size: 32
