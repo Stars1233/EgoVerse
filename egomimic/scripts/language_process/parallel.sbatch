@@ -6,7 +6,7 @@
 #SBATCH --mem-per-cpu=8G           # 192GB total RAM to handle 24 concurrent conversions
 #SBATCH --time=8:00:00
 #SBATCH -A gts-dxu345-rl2
-#SBATCH --output=log_conversion/ray_convert_%j.out
+#SBATCH --output=logs/conversion/ray_convert_%j.out
 
 cd /storage/home/hcoda1/4/paphiwetsa3/r-dxu345-0/projects/EgoVerse
 source ~/.bashrc
@@ -18,4 +18,5 @@ python egomimic/scripts/language_process/scale_to_zarr_annotation_parallel.py \
     --dataset-config-path egomimic/hydra_configs/data/cotrain_pi_lang.yaml \
     --conversion-mode pick_place_llm \
     --prompt-filepath egomimic/scripts/language_process/prompt.txt \
+    --augment-prompt-filepath egomimic/scripts/language_process/augment_prompt.txt \
     --project-name "dense-language"

@@ -149,9 +149,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     if cfg.reject_outliers:
         # Propagate the shared data schematic to top-level MultiDatasets for bounds checks.
+        # Use datamodule.train_datasets (null entries already filtered by the wrapper).
         _propagate_data_schematic_to_datasets(
             data_schematic,
-            train_datasets,
+            datamodule.train_datasets,
         )
     viz_func = cfg.visualization
     viz_func_dict = {}
@@ -171,7 +172,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         scheduler_interval=cfg.model.get("scheduler_interval", "step"),
     )
 
-    _log_dataset_frame_counts(train_datasets, valid_datasets)
+    _log_dataset_frame_counts(datamodule.train_datasets, datamodule.valid_datasets)
 
     log.info("Instantiating callbacks...")
     callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))

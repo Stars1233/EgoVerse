@@ -97,8 +97,11 @@ class MultiDataModuleWrapper(LightningDataModule):
                 ``discrete_state_input``).
         """
         super().__init__()
-        self.train_datasets = train_datasets
-        self.valid_datasets = valid_datasets
+        # Drop `None` slots so downstream iteration sites don't need null guards.
+        # `None` entries arise when an inheriting data config opts out of a
+        # dataset defined in a base (e.g. `aria_bimanual: null`).
+        self.train_datasets = {k: v for k, v in train_datasets.items() if v is not None}
+        self.valid_datasets = {k: v for k, v in valid_datasets.items() if v is not None}
         self.train_dataloader_params = train_dataloader_params
         self.valid_dataloader_params = valid_dataloader_params
         if use_tokenizer:

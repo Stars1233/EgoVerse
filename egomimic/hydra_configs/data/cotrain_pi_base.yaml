@@ -90,15 +90,15 @@ proprio_mode: original
 
 train_dataloader_params:
   eva_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 6
   aria_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 6
 valid_dataloader_params:
   eva_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 6
   aria_bimanual:
-    batch_size: 32
+    batch_size: 64
     num_workers: 6
