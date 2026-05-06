@@ -27,7 +27,7 @@ import random
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -44,6 +44,13 @@ from egomimic.utils.aws.aws_sql import (
     create_default_engine,
     episode_table_to_df,
 )
+
+if TYPE_CHECKING:
+    # Annotation-only import — avoids a runtime circular import with
+    # zarr_dataset_action_expert (which itself imports MultiDataset from here).
+    from egomimic.rldb.zarr.zarr_dataset_action_expert import (
+        ZarrActionExpertDataset,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +166,8 @@ class EpisodeResolver:
     Provides shared static/class helpers; subclasses implement resolve().
     """
 
+    _dataset_class = None  # set to ZarrDataset after that class is defined
+
     def __init__(
         self,
         folder_path: Path,
@@ -182,6 +191,7 @@ class EpisodeResolver:
         Returns:
             dict[str, ZarrDataset]: a dictionary mapping string keys to constructed zarr datasets from valid filters.
         """
+        dataset_class = self._dataset_class or ZarrDataset
         all_paths = sorted(search_path.iterdir())
         datasets: dict[str, ZarrDataset] = {}
         skipped: list[str] = []
@@ -197,7 +207,7 @@ class EpisodeResolver:
                 skipped.append(p.name)
                 continue
             try:
-                ds_obj = ZarrDataset(
+                ds_obj = dataset_class(
                     p,
                     key_map=self.key_map,
                     transform_list=self.transform_list,
@@ -562,7 +572,7 @@ class MultiDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        datasets: dict[str, MultiDataset | ZarrDataset],
+        datasets: dict[str, MultiDataset | ZarrDataset | ZarrActionExpertDataset],
         mode="train",
         percent=0.1,
         valid_ratio=0.2,
@@ -692,8 +702,7 @@ class MultiDataset(torch.utils.data.Dataset):
                 bad_indices = bad_mask.nonzero(as_tuple=False).tolist()
                 bad_values = arr[bad_mask].tolist()
                 prefix = (
-                    f"NaN/Inf violation ep={episode_name} "
-                    f"frame={idx} key={zarr_key}"
+                    f"NaN/Inf violation ep={episode_name} frame={idx} key={zarr_key}"
                 )
                 warn_key = f"nan_inf:{episode_name}:{zarr_key}"
                 if warn_key not in self._warned_violations:
@@ -714,7 +723,7 @@ class MultiDataset(torch.utils.data.Dataset):
                 below_bounds = q_low[below].tolist()
                 above_bounds = q_high[above].tolist()
                 prefix = (
-                    f"Bounds violation ep={episode_name} " f"frame={idx} key={zarr_key}"
+                    f"Bounds violation ep={episode_name} frame={idx} key={zarr_key}"
                 )
                 warn_key = f"bounds:{episode_name}:{zarr_key}"
                 if warn_key not in self._warned_violations:
@@ -727,10 +736,10 @@ class MultiDataset(torch.utils.data.Dataset):
                 return prefix
 
         return None
-    
+
     def __getitem__(self, idx, _attempts: int | None = None):
-        """ 
-        Multidataset handles outlier rejection so that you don't need to propagate the norm stats down to every sub dataset. 
+        """
+        Multidataset handles outlier rejection so that you don't need to propagate the norm stats down to every sub dataset.
         """
         dataset_name, local_idx = self.index_map[idx]
         dataset = self.datasets[dataset_name]
@@ -917,6 +926,13 @@ class ZarrDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return self.total_frames
 
+    def _chunk_end_idx(self, start_idx: int, horizon: int, key_type: str | None) -> int:
+        """End index (exclusive) for a windowed read starting at ``start_idx``.
+
+        Subclasses can override to add per-key-type clamping (e.g., annotation EOS).
+        """
+        return min(start_idx + horizon, self.total_frames)
+
     def _pad_sequences(self, data, horizon: int | None) -> dict:
         if horizon is None:
             return data
@@ -941,7 +957,7 @@ class ZarrDataset(torch.utils.data.Dataset):
         _attempts: int | None = None,
     ) -> dict[str, torch.Tensor]:
         # Build keys_dict with ranges based on whether action chunking is enabled
-        """ 
+        """
         ZarrDataset handles jpeg decoding and transform function errors, and triggers resample on dataset level.
         """
         data = {}
@@ -955,7 +971,7 @@ class ZarrDataset(torch.utils.data.Dataset):
                 continue
 
             if horizon is not None:
-                end_idx = min(idx + horizon, self.total_frames)
+                end_idx = self._chunk_end_idx(idx, horizon, key_type)
                 read_interval = (idx, end_idx)
             else:
                 read_interval = (idx, None)
@@ -1031,6 +1047,60 @@ class ZarrDataset(torch.utils.data.Dataset):
         data["metadata.robot_name"] = get_embodiment_id(self.embodiment)
         data["embodiment"] = get_embodiment_id(self.embodiment)
         return data
+
+
+class ZarrAnnotationCutoffDataset(ZarrDataset):
+    """ZarrDataset that clamps action chunks at the end of the enclosing annotation.
+
+    Standard chunking from the start frame, but action reads stop at EOS+1 of the
+    annotation span containing the start frame. The chunk is then padded out to
+    ``horizon`` via the base ``_pad_sequences`` (repeat-last), so frames beyond
+    EOS become the last action of the interval rather than crossing into the
+    next annotation.
+
+    If the start frame is not inside any annotation, behaves like the base class.
+    """
+
+    def init_episode(self):
+        super().init_episode()
+        self._frame_to_ann_end: dict[int, int] | None = None
+
+    def _build_frame_to_ann_end(self) -> dict[int, int]:
+        """Map ``frame_idx -> ann_end`` (exclusive) for every frame inside an
+        annotation span. Annotations use half-open ``[start_idx, end_idx)``.
+        """
+        mapping: dict[int, int] = {}
+        for ann in self._load_annotations():
+            start_idx = int(ann.get("start_idx", -1))
+            end_idx = int(ann.get("end_idx", -1))
+            if start_idx < 0 or end_idx <= start_idx:
+                continue
+            for idx in range(start_idx, end_idx):
+                mapping[idx] = end_idx
+        return mapping
+
+    def _chunk_end_idx(self, start_idx: int, horizon: int, key_type: str | None) -> int:
+        end_idx = super()._chunk_end_idx(start_idx, horizon, key_type)
+        if key_type != "action_keys":
+            return end_idx
+        if self._frame_to_ann_end is None:
+            self._frame_to_ann_end = self._build_frame_to_ann_end()
+        ann_end = self._frame_to_ann_end.get(start_idx)
+        if ann_end is None:
+            return end_idx
+        return min(end_idx, ann_end)
+
+
+class S3AnnotationCutoffEpisodeResolver(S3EpisodeResolver):
+    """S3EpisodeResolver that loads ZarrAnnotationCutoffDataset instances."""
+
+    _dataset_class = ZarrAnnotationCutoffDataset
+
+
+class LocalAnnotationCutoffEpisodeResolver(LocalEpisodeResolver):
+    """LocalEpisodeResolver that loads ZarrAnnotationCutoffDataset instances."""
+
+    _dataset_class = ZarrAnnotationCutoffDataset
 
 
 class ZarrEpisode:
