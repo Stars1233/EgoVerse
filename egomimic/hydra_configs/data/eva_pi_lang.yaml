@@ -20,6 +20,12 @@ valid_datasets:
         - "lambda row: row['robot_name'] == 'eva_bimanual' and row['task'] == 'pick_place' and row['zarr_processed_path'] != '' and 'alignment' not in (row.get('task_description') or '')"
   aria_bimanual: null
 
+use_tokenizer: true
+model_name: "google/paligemma-3b-mix-224"
 sampling_mode: "random"
 annotation_key: "annotations"
 default_prompt: "this is a bad action"
+
+proprio: false
+control_mode:
+  eva: "cam frame xyzypr gripper per arm"
