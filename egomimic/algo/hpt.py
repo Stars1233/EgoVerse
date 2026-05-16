@@ -1179,20 +1179,25 @@ class HPT(Algo):
         """
         data = {}
 
+        # MultiDataset emits dotted batch keys (e.g. "observations.state.ee_pose"),
+        # but HPT stems are registered under the last segment ("state_ee_pose",
+        # "front_img_1"). Translate via rsplit; no-op on already-flat keys.
         for key in proprio_keys:
             if key in batch:
-                data[f"state_{key}"] = batch[key].unsqueeze(1)
+                short = key.rsplit(".", 1)[-1]
+                data[f"state_{short}"] = batch[key].unsqueeze(1)
 
         for key in cam_keys:
             if key in batch:
+                short = key.rsplit(".", 1)[-1]
                 _data = batch[key]
                 if not torch.all(_data == 0):
-                    if self.nets.training and key in self.encoders:
+                    if self.nets.training and short in self.encoders:
                         _data = self.train_image_augs(_data)
-                    elif self.eval_image_augs and key in self.encoders:
+                    elif self.eval_image_augs and short in self.encoders:
                         _data = self.eval_image_augs(_data)
 
-                data[key] = _data.unsqueeze(1).unsqueeze(1)
+                data[short] = _data.unsqueeze(1).unsqueeze(1)
 
         for key in lang_keys:
             if key in batch:
