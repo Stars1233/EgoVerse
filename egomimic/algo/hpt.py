@@ -1068,6 +1068,9 @@ class HPT(Algo):
                 "domain": embodiment_name,  # readability on config side
                 "data": data,
             }
+            # stem_process replaces image tensors with encoder outputs in place,
+            # so keep a fresh copy for the forward() call below.
+            forward_data = self._clone_batch(hpt_batch["data"])
 
             # BC val loss — same call as forward_training.
             if self.freeze_repr:
@@ -1078,9 +1081,7 @@ class HPT(Algo):
                 val_loss = self.nets["policy"].compute_loss(hpt_batch)
             unnorm_preds[f"{embodiment_name}_loss"] = val_loss
 
-            actions = self.nets["policy"].forward(
-                hpt_batch["domain"], hpt_batch["data"]
-            )
+            actions = self.nets["policy"].forward(hpt_batch["domain"], forward_data)
             predictions = OrderedDict()
 
             for key in actions:
