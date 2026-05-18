@@ -5,8 +5,8 @@ defaults:
 train_datasets:
   eva_bimanual:
     resolver:
-      _target_: egomimic.rldb.zarr.zarr_dataset_multi.LocalAnnotationCutoffEpisodeResolver
-      folder_path: /storage/project/r-dxu345-0/paphiwetsa3/datasets/pick_place_diverse
+      _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3EpisodeResolver
+      folder_path: ${paths.dataset_dir}
       key_map:
         keymap_mode: cartesian_pi
     filters:
