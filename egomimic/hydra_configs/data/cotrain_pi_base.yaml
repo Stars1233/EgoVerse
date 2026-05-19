@@ -4,8 +4,8 @@ train_datasets:
   eva_bimanual:
     _target_: egomimic.rldb.zarr.zarr_dataset_multi.MultiDataset._from_resolver
     resolver:
-      _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3AnnotationCutoffEpisodeResolver
-      folder_path: /storage/home/hcoda1/4/paphiwetsa3/r-dxu345-0/datasets/pick_place_elmond_refactor
+      _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3EpisodeResolver
+      folder_path: ${paths.dataset_dir}
       key_map:
         _target_: egomimic.rldb.embodiment.eva.Eva.get_keymap
         keymap_mode: cartesian
@@ -19,8 +19,8 @@ train_datasets:
   aria_bimanual:
     _target_: egomimic.rldb.zarr.zarr_dataset_multi.MultiDataset._from_resolver
     resolver:
-      _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3AnnotationCutoffEpisodeResolver
-      folder_path: /storage/home/hcoda1/4/paphiwetsa3/r-dxu345-0/datasets/pick_place_elmond_refactor
+      _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3EpisodeResolver
+      folder_path: ${paths.dataset_dir}
       key_map:
         _target_: egomimic.rldb.embodiment.human.Aria.get_keymap
         keymap_mode: cartesian
