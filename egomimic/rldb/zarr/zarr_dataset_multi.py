@@ -505,6 +505,123 @@ class S3EpisodeResolver(EpisodeResolver):
         return filtered_paths
 
 
+# ---------------------------------------------------------------------------
+# Safer variant: S3EpisodeResolver subclass that filters out unusable episodes
+# (missing required keymap keys, corrupt JPEGs, or — optionally — episodes
+# without a language-annotation field).
+# ---------------------------------------------------------------------------
+def _jpeg_probe_failed(ds_obj: "ZarrDataset") -> tuple[str, str] | None:
+    """Try decoding 5 sampled frames per image key. If every probe fails
+    for a key, return (key, reason); else None."""
+    image_keys = getattr(ds_obj, "_image_keys", None) or set()
+    for img_key in image_keys:
+        try:
+            arr = ds_obj.episode_reader._store[img_key]
+            n = arr.shape[0] if hasattr(arr, "shape") else len(arr)
+            if n == 0:
+                return (img_key, "empty")
+            probe_idx = sorted({0, n // 4, n // 2, 3 * n // 4, n - 1})
+            ok_any = False
+            last_err = ""
+            for i in probe_idx:
+                try:
+                    simplejpeg.decode_jpeg(arr[i : i + 1][0], colorspace="RGB")
+                    ok_any = True
+                    break
+                except Exception as e:
+                    last_err = str(e)
+            if not ok_any:
+                return (img_key, f"all probes failed: {last_err}")
+        except Exception as e:
+            return (img_key, str(e))
+    return None
+
+
+def _has_annotation(ds_obj: "ZarrDataset", annotation_key: str = "annotations") -> bool:
+    try:
+        arr = ds_obj.episode_reader._store[annotation_key]
+    except Exception:
+        return False
+    try:
+        n = arr.shape[0] if hasattr(arr, "shape") else len(arr)
+    except Exception:
+        return False
+    return n > 0
+
+
+class SafeS3EpisodeResolver(S3EpisodeResolver):
+    """Drop-in replacement for `S3EpisodeResolver` that filters unusable
+    episodes after the underlying resolver has discovered them. Skips
+    episodes that:
+      - are missing any keymap-required key,
+      - have unrecoverably-corrupt JPEG image streams (verified by
+        spot-decoding a handful of frames), or
+      - (optionally) lack a non-empty language-annotation field."""
+
+    def __init__(
+        self,
+        *args,
+        require_annotations: bool = False,
+        annotation_key: str = "annotations",
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.require_annotations = require_annotations
+        self.annotation_key = annotation_key
+
+    def resolve(self, filters=None) -> dict[str, "ZarrDataset"]:
+        datasets = super().resolve(filters=filters)
+        if self.key_map is None:
+            return datasets
+
+        required = {
+            spec["zarr_key"]
+            for spec in self.key_map.values()
+            if isinstance(spec, dict)
+            and spec.get("key_type") != "annotation_keys"
+            and spec.get("zarr_key") is not None
+        }
+
+        kept: dict[str, "ZarrDataset"] = {}
+        for ep_hash, ds_obj in datasets.items():
+            available = set(getattr(ds_obj, "keys_dict", {}))
+            missing = required - available
+            if missing:
+                logger.warning(
+                    "SafeS3EpisodeResolver: skipping %s (missing %s)",
+                    ep_hash,
+                    sorted(missing),
+                )
+                continue
+            bad = _jpeg_probe_failed(ds_obj)
+            if bad is not None:
+                logger.warning(
+                    "SafeS3EpisodeResolver: skipping %s (JPEG probe failed for %s: %s)",
+                    ep_hash,
+                    bad[0],
+                    bad[1],
+                )
+                continue
+            if self.require_annotations and not _has_annotation(
+                ds_obj, self.annotation_key
+            ):
+                logger.warning(
+                    "SafeS3EpisodeResolver: skipping %s (no '%s' field — episode has no language annotation)",
+                    ep_hash,
+                    self.annotation_key,
+                )
+                continue
+            kept[ep_hash] = ds_obj
+
+        if not kept:
+            logger.warning(
+                "SafeS3EpisodeResolver: every episode was filtered out — "
+                "the keymap may demand a key your data does not have, or "
+                "require_annotations=true is too strict."
+            )
+        return kept
+
+
 class LocalEpisodeResolver(EpisodeResolver):
     """
     Resolves episodes from local Zarr stores, filtering via local metadata.
@@ -1532,6 +1649,8 @@ class ZarrDataset(torch.utils.data.Dataset):
 
             data["metadata.robot_name"] = get_embodiment_id(self.embodiment)
             data["embodiment"] = get_embodiment_id(self.embodiment)
+            ep_name = Path(self.episode_path).name
+            data["episode_hash"] = ep_name[:-5] if ep_name.endswith(".zarr") else ep_name
             _ = origin  # preserved for symmetry with prior API
             return data
 

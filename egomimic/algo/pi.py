@@ -312,6 +312,11 @@ class PI(Algo):
                 if key_name is not None:
                     processed_batch[embodiment_id][key_name] = value
 
+            # Carry forward episode_hash from the data dict (other keys are
+            # built inline below via _tokenize_prompts).
+            if "episode_hash" in _batch:
+                processed_batch[embodiment_id]["episode_hash"] = _batch["episode_hash"]
+
             ac_key = self.ac_keys[embodiment_id]
             if ac_key not in processed_batch[embodiment_id]:
                 raise KeyError(
