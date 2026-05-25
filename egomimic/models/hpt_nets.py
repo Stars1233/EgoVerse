@@ -658,6 +658,122 @@ class ResNet(PolicyStem):
         return feat
 
 
+def _qwen_last_token_pool(
+    last_hidden_states: torch.Tensor, attention_mask: torch.Tensor
+) -> torch.Tensor:
+    """Last-token pooling per the official Qwen3-Embedding recipe.
+
+    Handles both left- and right-padding. For each row we read the hidden state
+    at the position of the final non-padded token.
+    """
+    left_padded = bool((attention_mask[:, -1].sum() == attention_mask.shape[0]).item())
+    if left_padded:
+        return last_hidden_states[:, -1]
+    seq_lens = attention_mask.sum(dim=1) - 1
+    batch_idx = torch.arange(last_hidden_states.size(0), device=last_hidden_states.device)
+    return last_hidden_states[batch_idx, seq_lens]
+
+
+class _Qwen3BaseEncoder(PolicyStem):
+    """Shared base for Qwen3-Embedding stems used by HPT.
+
+    Owns the tokenizer + transformer encoder so HPT.process_batch_for_training
+    only needs to pass a list of raw prompt strings. Subclasses pick whether
+    the feature passed to cross-attention is a pooled (B, 1, D) summary or the
+    full per-token (B, L, D) sequence.
+
+    Args:
+        model_name: HF identifier for the Qwen3-Embedding checkpoint.
+        max_length: tokenizer truncation length.
+        freeze: if True (default), freeze the encoder weights and run in
+            eval mode under no_grad. If False, the encoder is trainable.
+        dtype: weight dtype for the HF model (fp16 by default to keep VRAM
+            cost down when frozen).
+        normalize_pooled: only used by the pooled subclass; L2-normalizes the
+            sentence embedding (Qwen3 official recipe).
+    """
+
+    DEFAULT_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        max_length: int = 128,
+        freeze: bool = True,
+        dtype: str = "float16",
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        from transformers import AutoModel, AutoTokenizer
+
+        self.model_name = model_name
+        self.max_length = max_length
+        self.freeze_encoder = freeze
+        torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
+        self.encoder = AutoModel.from_pretrained(model_name, torch_dtype=torch_dtype)
+        if freeze:
+            for p in self.encoder.parameters():
+                p.requires_grad = False
+            self.encoder.eval()
+        self.hidden_size = int(self.encoder.config.hidden_size)
+
+    def _encode(self, prompts):
+        tokens = self.tokenizer(
+            prompts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        ).to(self.device)
+        if self.freeze_encoder:
+            with torch.no_grad():
+                out = self.encoder(**tokens)
+        else:
+            out = self.encoder(**tokens)
+        return out.last_hidden_state, tokens["attention_mask"]
+
+    def train(self, mode: bool = True):
+        """Keep the frozen encoder in eval mode regardless of outer train flag."""
+        super().train(mode)
+        if self.freeze_encoder:
+            self.encoder.eval()
+        return self
+
+
+class QwenPooledEncoder(_Qwen3BaseEncoder):
+    """Qwen3-Embedding stem with last-token pooling -> (B, 1, hidden_size)."""
+
+    def forward(self, prompts):
+        hidden, mask = self._encode(prompts)
+        pooled = _qwen_last_token_pool(hidden, mask)
+        pooled = F.normalize(pooled.float(), p=2, dim=1)
+        return pooled.unsqueeze(1)  # (B, 1, hidden_size)
+
+    def compute_latent(self, prompts):
+        feat = self(prompts)  # (B, 1, hidden_size)
+        stem_tokens = self.tokens.repeat(feat.shape[0], 1, 1)
+        return self.cross_attention(stem_tokens, feat)
+
+
+class QwenPerTokenEncoder(_Qwen3BaseEncoder):
+    """Qwen3-Embedding stem returning per-token hidden states (B, L, hidden_size).
+
+    Padding positions are zeroed before cross-attention so they don't pull
+    information from the learnable stem tokens.
+    """
+
+    def forward(self, prompts):
+        hidden, mask = self._encode(prompts)
+        feat = hidden.float() * mask.unsqueeze(-1).float()
+        return feat
+
+    def compute_latent(self, prompts):
+        feat = self(prompts)  # (B, L, hidden_size)
+        stem_tokens = self.tokens.repeat(feat.shape[0], 1, 1)
+        return self.cross_attention(stem_tokens, feat)
+
+
 class T5Encoder(PolicyStem):
     def __init__(self, per_token=True, **kwargs) -> None:
         """T5 Encoder that expects pre-tokenized inputs
