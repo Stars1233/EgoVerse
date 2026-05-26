@@ -76,6 +76,7 @@ robomimic_model:
       max_length: 128
       freeze: true
       dtype: "float16"
+      output_dim: 256
       specs:
         random_horizon_masking: false
         cross_attn:
@@ -83,7 +84,7 @@ robomimic_model:
           crossattn_heads: 8
           crossattn_dim_head: 64
           crossattn_modality_dropout: 0.1
-          modality_embed_dim: 1024  # Qwen3-Embedding-0.6B hidden_size
+          modality_embed_dim: 256  # match trunk embed_dim (Qwen output projected via stem.proj from 1024)
 
   stem_specs:
     eva_bimanual:

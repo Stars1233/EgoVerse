@@ -701,6 +701,7 @@ class _Qwen3BaseEncoder(PolicyStem):
         max_length: int = 128,
         freeze: bool = True,
         dtype: str = "float16",
+        output_dim: int | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -717,6 +718,16 @@ class _Qwen3BaseEncoder(PolicyStem):
                 p.requires_grad = False
             self.encoder.eval()
         self.hidden_size = int(self.encoder.config.hidden_size)
+        # Project Qwen's hidden_size (typ. 1024) down to the cross-attn
+        # modality_embed_dim. Must match the trunk's embed_dim so the post-stem
+        # token tensors concat with other modalities' tokens in
+        # ``HPTModel.preprocess_tokens``.
+        self.output_dim = output_dim if output_dim is not None else self.hidden_size
+        self.proj = (
+            nn.Linear(self.hidden_size, self.output_dim)
+            if self.output_dim != self.hidden_size
+            else nn.Identity()
+        )
 
     def _encode(self, prompts):
         tokens = self.tokenizer(
@@ -748,7 +759,8 @@ class QwenPooledEncoder(_Qwen3BaseEncoder):
         hidden, mask = self._encode(prompts)
         pooled = _qwen_last_token_pool(hidden, mask)
         pooled = F.normalize(pooled.float(), p=2, dim=1)
-        return pooled.unsqueeze(1)  # (B, 1, hidden_size)
+        pooled = self.proj(pooled)
+        return pooled.unsqueeze(1)  # (B, 1, output_dim)
 
     def compute_latent(self, prompts):
         feat = self(prompts)  # (B, 1, hidden_size)
@@ -766,7 +778,7 @@ class QwenPerTokenEncoder(_Qwen3BaseEncoder):
     def forward(self, prompts):
         hidden, mask = self._encode(prompts)
         feat = hidden.float() * mask.unsqueeze(-1).float()
-        return feat
+        return self.proj(feat)  # (B, L, output_dim)
 
     def compute_latent(self, prompts):
         feat = self(prompts)  # (B, L, hidden_size)
