@@ -30,7 +30,7 @@ train_datasets:
       folder_path: /storage/project/r-dxu345-0/paphiwetsa3/datasets/pickplace_qwen
       key_map:
         _target_: egomimic.rldb.embodiment.human.Aria.get_keymap
-        keymap_mode: cartesian
+        keymap_mode: cartesian_pi
         annotation_key: annotations
       transform_list:
         _target_: egomimic.rldb.embodiment.human.Aria.get_transform_list

@@ -159,11 +159,18 @@ class Aria(Human):
     @classmethod
     def _get_keymap(
         cls,
-        keymap_mode: Literal["cartesian", "keypoints"],
+        keymap_mode: Literal["cartesian", "cartesian_pi", "keypoints"],
     ):
-        if keymap_mode == "cartesian":
+        if keymap_mode in ("cartesian", "cartesian_pi"):
+            # cartesian_pi uses Pi/PaliGemma-style image key naming so a Pi
+            # batch's pi_cam_keys (base_0_rgb / *_wrist_0_rgb) can find aria's
+            # front image. aria has no wrist cameras; the missing wrist keys
+            # are auto-duplicated by Pi's _fill_missing_images.
+            front_key = (
+                "base_0_rgb" if keymap_mode == "cartesian_pi" else cls.VIZ_IMAGE_KEY
+            )
             return {
-                cls.VIZ_IMAGE_KEY: {
+                front_key: {
                     "key_type": "camera_keys",
                     "zarr_key": "images.front_1",
                 },
