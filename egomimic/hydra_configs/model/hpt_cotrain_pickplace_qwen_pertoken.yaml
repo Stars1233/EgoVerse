@@ -170,14 +170,14 @@ optimizer:
   lr: 1e-4
   weight_decay: 0.0001
 
-# Warmup-cosine: 1e-4 peak, 5% warmup, decay over 2000 epochs (epoch-stepped).
-# Note: get_cosine_schedule_with_warmup decays to 0; effective floor approaches
-# ~5e-6 in the tail. Override num_training_steps via trainHydra if max_epochs
-# changes at launch.
+# Warmup -> cosine schedule with hard eta_min=5e-6 (epoch-stepped).
+#   Epochs 0-100   : linear warmup 0 -> 1e-4   (5% of 2000 epochs)
+#   Epochs 100-2000: cosine decay  1e-4 -> 5e-6
+# milestones is in epochs (interval=epoch).
 scheduler:
-  _target_: transformers.get_cosine_schedule_with_warmup
+  _target_: egomimic.utils.scheduler_utils.warmup_then_cosine
   _partial_: true
-  num_warmup_steps: 100      # 5% of 2000
-  num_training_steps: 2000
-  num_cycles: 0.5
+  warmup_epochs: 100      # 5% of 2000 epochs
+  total_epochs: 2000
+  eta_min: 5.0e-6
 scheduler_interval: epoch
