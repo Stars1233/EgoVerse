@@ -42,7 +42,7 @@ robomimic_model:
     action_horizon: 64
     no_trunk: false
     use_domain_embedding: true
-    drop_path: 0.1
+    drop_path: 0.2
     weight_init_style: "pytorch"
 
   multitask: false
@@ -128,12 +128,12 @@ robomimic_model:
         aria_bimanual: 12
       model:
         _target_: egomimic.models.denoising_nets.CrossTransformer
-        nblocks: 6
+        nblocks: 8
         cond_dim: 1024
-        hidden_dim: 512
+        hidden_dim: 768
         act_dim: 14
         act_seq: 100
-        n_heads: 8
+        n_heads: 12
         dropout: 0.1
         mlp_layers: 4
         mlp_ratio: 4

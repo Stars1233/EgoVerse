@@ -128,9 +128,9 @@ robomimic_model:
         aria_bimanual: 12
       model:
         _target_: egomimic.models.denoising_nets.CrossTransformer
-        nblocks: 6
+        nblocks: 8
         cond_dim: 768
-        hidden_dim: 384
+        hidden_dim: 512
         act_dim: 14
         act_seq: 100
         n_heads: 8
