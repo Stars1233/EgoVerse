@@ -168,7 +168,7 @@ robomimic_model:
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
-  lr: 1e-4
+  lr: 2e-4
   weight_decay: 0.0001
 
 # Warmup -> cosine schedule with hard eta_min=5e-6 (epoch-stepped).
@@ -180,5 +180,5 @@ scheduler:
   _partial_: true
   warmup_epochs: 100      # 5% of 2000 epochs
   total_epochs: 2000
-  eta_min: 5.0e-6
+  eta_min: 1.0e-5
 scheduler_interval: epoch
