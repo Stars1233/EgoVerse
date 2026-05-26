@@ -18,7 +18,7 @@ train_datasets:
     _target_: egomimic.rldb.zarr.zarr_dataset_multi.MultiDataset._from_resolver
     resolver:
       _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3AnnotationCutoffEpisodeResolver
-      folder_path: /tmp/egoverseS3ZarrDataset
+      folder_path: /storage/project/r-dxu345-0/paphiwetsa3/datasets/pickplace_qwen
       key_map:
         _target_: egomimic.rldb.embodiment.eva.Eva.get_keymap
         keymap_mode: cartesian
@@ -36,7 +36,7 @@ train_datasets:
     _target_: egomimic.rldb.zarr.zarr_dataset_multi.MultiDataset._from_resolver
     resolver:
       _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3AnnotationCutoffEpisodeResolver
-      folder_path: /tmp/egoverseS3ZarrDataset
+      folder_path: /storage/project/r-dxu345-0/paphiwetsa3/datasets/pickplace_qwen
       key_map:
         _target_: egomimic.rldb.embodiment.human.Aria.get_keymap
         keymap_mode: cartesian
@@ -56,7 +56,7 @@ valid_datasets:
     _target_: egomimic.rldb.zarr.zarr_dataset_multi.MultiDataset._from_resolver
     resolver:
       _target_: egomimic.rldb.zarr.zarr_dataset_multi.S3AnnotationCutoffEpisodeResolver
-      folder_path: /tmp/egoverseS3ZarrDataset
+      folder_path: /storage/project/r-dxu345-0/paphiwetsa3/datasets/pickplace_qwen
       key_map:
         _target_: egomimic.rldb.embodiment.eva.Eva.get_keymap
         keymap_mode: cartesian
